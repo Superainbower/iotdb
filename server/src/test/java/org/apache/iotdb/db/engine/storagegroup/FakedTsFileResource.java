@@ -25,30 +25,18 @@ import java.io.File;
 
 public class FakedTsFileResource extends TsFileResource {
   /** time index */
-  protected ITimeIndex timeIndex;
+  public ITimeIndex timeIndex;
+
+  public long timePartition;
 
   private long tsFileSize;
   private String fakeTsfileName;
 
   public FakedTsFileResource(long tsFileSize, String name) {
-    this.tsFileSize = tsFileSize;
-    super.closed = true;
-    super.isMerging = false;
-    fakeTsfileName = name;
-  }
-
-  public FakedTsFileResource(long tsFileSize, boolean isClosed, boolean isMerging, String name) {
-    this.tsFileSize = tsFileSize;
-    super.closed = isClosed;
-    super.isMerging = isMerging;
-    fakeTsfileName = name;
-  }
-
-  public FakedTsFileResource(long tsFileSize, long startTime, long endTime) {
     this.timeIndex = new FileTimeIndex();
-    timeIndex.putStartTime("", startTime);
-    timeIndex.putEndTime("", endTime);
     this.tsFileSize = tsFileSize;
+    fakeTsfileName = name;
+    setStatusForTest(TsFileResourceStatus.NORMAL);
   }
 
   public void setTsFileSize(long tsFileSize) {
@@ -64,13 +52,28 @@ public class FakedTsFileResource extends TsFileResource {
   public String toString() {
     StringBuilder builder = new StringBuilder();
     builder.append(tsFileSize).append(",");
-    builder.append(closed).append(",");
-    builder.append(isMerging);
+    builder.append(getStatus());
     return builder.toString();
   }
 
   @Override
   public File getTsFile() {
     return new File(fakeTsfileName);
+  }
+
+  @Override
+  public boolean equals(Object otherObject) {
+    if (otherObject instanceof FakedTsFileResource) {
+      FakedTsFileResource otherResource = (FakedTsFileResource) otherObject;
+      return this.fakeTsfileName.equals(otherResource.fakeTsfileName)
+          && this.tsFileSize == otherResource.tsFileSize;
+    }
+
+    return false;
+  }
+
+  @Override
+  public long getTimePartition() {
+    return this.timePartition;
   }
 }

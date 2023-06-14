@@ -18,12 +18,15 @@
  */
 package org.apache.iotdb.db.auth.user;
 
-import org.apache.iotdb.db.auth.AuthException;
-import org.apache.iotdb.db.auth.entity.PathPrivilege;
-import org.apache.iotdb.db.auth.entity.User;
-import org.apache.iotdb.db.conf.IoTDBDescriptor;
+import org.apache.iotdb.commons.auth.AuthException;
+import org.apache.iotdb.commons.auth.entity.PathPrivilege;
+import org.apache.iotdb.commons.auth.entity.User;
+import org.apache.iotdb.commons.auth.user.LocalFileUserManager;
+import org.apache.iotdb.commons.conf.CommonDescriptor;
+import org.apache.iotdb.commons.exception.IllegalPathException;
+import org.apache.iotdb.commons.path.PartialPath;
+import org.apache.iotdb.commons.utils.AuthUtils;
 import org.apache.iotdb.db.constant.TestConstant;
-import org.apache.iotdb.db.utils.AuthUtils;
 import org.apache.iotdb.db.utils.EnvironmentUtils;
 
 import org.apache.commons.io.FileUtils;
@@ -75,12 +78,12 @@ public class LocalFileUserManagerTest {
   }
 
   @Test
-  public void test() throws AuthException {
+  public void test() throws AuthException, IllegalPathException {
     User[] users = new User[5];
     for (int i = 0; i < users.length; i++) {
       users[i] = new User("user" + i, "password" + i);
       for (int j = 0; j <= i; j++) {
-        PathPrivilege pathPrivilege = new PathPrivilege("root.a.b.c" + j);
+        PathPrivilege pathPrivilege = new PathPrivilege(new PartialPath("root.a.b.c" + j));
         pathPrivilege.getPrivileges().add(j);
         users[i].getPrivilegeList().add(pathPrivilege);
         users[i].getRoleList().add("role" + j);
@@ -96,7 +99,7 @@ public class LocalFileUserManagerTest {
     for (User user1 : users) {
       user = manager.getUser(user1.getName());
       assertEquals(user1.getName(), user.getName());
-      assertEquals(AuthUtils.encryptPassword(user1.getPassword()), user.getPassword());
+      assertTrue(AuthUtils.validatePassword(user1.getPassword(), user.getPassword()));
     }
 
     assertFalse(manager.createUser(users[0].getName(), users[0].getPassword()));
@@ -123,7 +126,7 @@ public class LocalFileUserManagerTest {
 
     // grant privilege
     user = manager.getUser(users[0].getName());
-    String path = "root.a.b.c";
+    PartialPath path = new PartialPath("root.a.b.c");
     int privilegeId = 0;
     assertFalse(user.hasPrivilege(path, privilegeId));
     assertTrue(manager.grantPrivilegeToUser(user.getName(), path, privilegeId));
@@ -171,7 +174,7 @@ public class LocalFileUserManagerTest {
     assertTrue(manager.updateUserPassword(user.getName(), newPassword));
     assertFalse(manager.updateUserPassword(user.getName(), illegalPW));
     user = manager.getUser(user.getName());
-    assertEquals(AuthUtils.encryptPassword(newPassword), user.getPassword());
+    assertTrue(AuthUtils.validatePassword(newPassword, user.getPassword()));
     caught = false;
     try {
       manager.updateUserPassword("not a user", newPassword);
@@ -210,7 +213,7 @@ public class LocalFileUserManagerTest {
     // list users
     List<String> usernames = manager.listAllUsers();
     usernames.sort(null);
-    assertEquals(IoTDBDescriptor.getInstance().getConfig().getAdminName(), usernames.get(0));
+    assertEquals(CommonDescriptor.getInstance().getConfig().getAdminName(), usernames.get(0));
     for (int i = 0; i < users.length - 1; i++) {
       assertEquals(users[i].getName(), usernames.get(i + 1));
     }

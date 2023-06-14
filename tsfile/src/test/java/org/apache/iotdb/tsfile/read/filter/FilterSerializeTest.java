@@ -26,6 +26,9 @@ import org.junit.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.TimeZone;
 
 import static org.junit.Assert.assertEquals;
 
@@ -40,8 +43,17 @@ public class FilterSerializeTest {
           ValueFilter.gtEq("filter"),
           ValueFilter.lt(0.1),
           ValueFilter.ltEq(0.01f),
-          ValueFilter.not(ValueFilter.eq(true)),
-          ValueFilter.notEq(false)
+          FilterFactory.not(ValueFilter.eq(true)),
+          ValueFilter.notEq(false),
+          ValueFilter.notEq(false),
+          ValueFilter.in(new HashSet<>(Arrays.asList("a", "b"))),
+          ValueFilter.notIn(new HashSet<>(Arrays.asList("c", "d"))),
+          ValueFilter.regexp("s.*"),
+          ValueFilter.like("s.*"),
+          ValueFilter.notRegexp("s.*"),
+          ValueFilter.notLike("s.*"),
+          ValueFilter.between(1, 100),
+          ValueFilter.notBetween(1, 100)
         };
     for (Filter filter : filters) {
       validateSerialization(filter);
@@ -57,8 +69,13 @@ public class FilterSerializeTest {
           TimeFilter.gtEq(3),
           TimeFilter.lt(4),
           TimeFilter.ltEq(5),
-          TimeFilter.not(ValueFilter.eq(6)),
-          TimeFilter.notEq(7)
+          FilterFactory.not(ValueFilter.eq(6)),
+          TimeFilter.notEq(7),
+          TimeFilter.notEq(7),
+          TimeFilter.in(new HashSet<>(Arrays.asList(1L, 2L))),
+          TimeFilter.notIn(new HashSet<>(Arrays.asList(3L, 4L))),
+          TimeFilter.between(1, 100),
+          TimeFilter.notBetween(1, 100)
         };
     for (Filter filter : filters) {
       validateSerialization(filter);
@@ -70,7 +87,7 @@ public class FilterSerializeTest {
     Filter[] filters =
         new Filter[] {
           FilterFactory.and(TimeFilter.eq(1), ValueFilter.eq(1)),
-          FilterFactory.or(ValueFilter.gt(2L), TimeFilter.not(ValueFilter.eq(6)))
+          FilterFactory.or(ValueFilter.gt(2L), FilterFactory.not(ValueFilter.eq(6)))
         };
     for (Filter filter : filters) {
       validateSerialization(filter);
@@ -82,6 +99,18 @@ public class FilterSerializeTest {
     Filter[] filters =
         new Filter[] {
           new GroupByFilter(1, 2, 3, 4), new GroupByFilter(4, 3, 2, 1),
+        };
+    for (Filter filter : filters) {
+      validateSerialization(filter);
+    }
+  }
+
+  @Test
+  public void testGroupByMonthFilter() {
+    Filter[] filters =
+        new Filter[] {
+          new GroupByMonthFilter(1, 2, 3, 4, true, false, TimeZone.getTimeZone("Asia/Shanghai")),
+          new GroupByMonthFilter(4, 3, 2, 1, false, true, TimeZone.getTimeZone("Atlantic/Faeroe")),
         };
     for (Filter filter : filters) {
       validateSerialization(filter);

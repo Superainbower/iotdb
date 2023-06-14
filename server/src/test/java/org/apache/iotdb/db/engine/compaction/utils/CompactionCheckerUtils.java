@@ -19,15 +19,21 @@
 
 package org.apache.iotdb.db.engine.compaction.utils;
 
+import org.apache.iotdb.commons.exception.IllegalPathException;
+import org.apache.iotdb.commons.path.PartialPath;
+import org.apache.iotdb.db.engine.cache.BloomFilterCache;
+import org.apache.iotdb.db.engine.cache.ChunkCache;
+import org.apache.iotdb.db.engine.cache.TimeSeriesMetadataCache;
+import org.apache.iotdb.db.engine.compaction.execute.utils.reader.IDataBlockReader;
+import org.apache.iotdb.db.engine.compaction.execute.utils.reader.SeriesDataBlockReader;
 import org.apache.iotdb.db.engine.modification.Deletion;
 import org.apache.iotdb.db.engine.modification.Modification;
 import org.apache.iotdb.db.engine.modification.ModificationFile;
 import org.apache.iotdb.db.engine.storagegroup.TsFileResource;
-import org.apache.iotdb.db.exception.metadata.IllegalPathException;
-import org.apache.iotdb.db.metadata.PartialPath;
+import org.apache.iotdb.db.query.control.FileReaderManager;
+import org.apache.iotdb.db.utils.EnvironmentUtils;
 import org.apache.iotdb.tsfile.common.conf.TSFileConfig;
 import org.apache.iotdb.tsfile.common.conf.TSFileDescriptor;
-import org.apache.iotdb.tsfile.common.constant.TsFileConstant;
 import org.apache.iotdb.tsfile.encoding.decoder.Decoder;
 import org.apache.iotdb.tsfile.file.MetaMarker;
 import org.apache.iotdb.tsfile.file.header.ChunkGroupHeader;
@@ -42,9 +48,11 @@ import org.apache.iotdb.tsfile.read.common.BatchData;
 import org.apache.iotdb.tsfile.read.common.Chunk;
 import org.apache.iotdb.tsfile.read.common.IBatchDataIterator;
 import org.apache.iotdb.tsfile.read.common.Path;
+import org.apache.iotdb.tsfile.read.common.block.TsBlock;
 import org.apache.iotdb.tsfile.read.reader.chunk.ChunkReader;
 import org.apache.iotdb.tsfile.read.reader.page.PageReader;
 import org.apache.iotdb.tsfile.utils.TsPrimitiveType;
+import org.apache.iotdb.tsfile.write.schema.IMeasurementSchema;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -58,8 +66,9 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.TreeMap;
 
-import static org.apache.iotdb.db.utils.QueryUtils.modifyChunkMetaData;
+import static org.apache.iotdb.db.utils.ModificationUtils.modifyChunkMetaData;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.fail;
 
 public class CompactionCheckerUtils {
@@ -95,6 +104,9 @@ public class CompactionCheckerUtils {
    */
   public static Map<String, List<TimeValuePair>> readFiles(List<TsFileResource> tsFileResources)
       throws IOException, IllegalPathException {
+    ChunkCache.getInstance().clear();
+    TimeSeriesMetadataCache.getInstance().clear();
+    BloomFilterCache.getInstance().clear();
     Map<String, Map<Long, TimeValuePair>> mapResult = new HashMap<>();
     for (TsFileResource tsFileResource : tsFileResources) {
       try (TsFileSequenceReader reader = new TsFileSequenceReader(tsFileResource.getTsFilePath())) {
@@ -188,11 +200,11 @@ public class CompactionCheckerUtils {
         while ((marker = reader.readMarker()) != MetaMarker.SEPARATOR) {
           switch (marker) {
             case MetaMarker.CHUNK_HEADER:
-            case (byte) (MetaMarker.CHUNK_HEADER | TsFileConstant.TIME_COLUMN_MASK):
-            case (byte) (MetaMarker.CHUNK_HEADER | TsFileConstant.VALUE_COLUMN_MASK):
+            case MetaMarker.TIME_CHUNK_HEADER:
+            case MetaMarker.VALUE_CHUNK_HEADER:
             case MetaMarker.ONLY_ONE_PAGE_CHUNK_HEADER:
-            case (byte) (MetaMarker.ONLY_ONE_PAGE_CHUNK_HEADER | TsFileConstant.TIME_COLUMN_MASK):
-            case (byte) (MetaMarker.ONLY_ONE_PAGE_CHUNK_HEADER | TsFileConstant.VALUE_COLUMN_MASK):
+            case MetaMarker.ONLY_ONE_PAGE_TIME_CHUNK_HEADER:
+            case MetaMarker.ONLY_ONE_PAGE_VALUE_CHUNK_HEADER:
               ChunkHeader header = reader.readChunkHeader(marker);
               // read the next measurement and pack data of last measurement
               if (currTimeValuePairs.size() > 0) {
@@ -385,11 +397,11 @@ public class CompactionCheckerUtils {
       while ((marker = reader.readMarker()) != MetaMarker.SEPARATOR) {
         switch (marker) {
           case MetaMarker.CHUNK_HEADER:
-          case (byte) (MetaMarker.CHUNK_HEADER | TsFileConstant.TIME_COLUMN_MASK):
-          case (byte) (MetaMarker.CHUNK_HEADER | TsFileConstant.VALUE_COLUMN_MASK):
+          case MetaMarker.TIME_CHUNK_HEADER:
+          case MetaMarker.VALUE_CHUNK_HEADER:
           case MetaMarker.ONLY_ONE_PAGE_CHUNK_HEADER:
-          case (byte) (MetaMarker.ONLY_ONE_PAGE_CHUNK_HEADER | TsFileConstant.TIME_COLUMN_MASK):
-          case (byte) (MetaMarker.ONLY_ONE_PAGE_CHUNK_HEADER | TsFileConstant.VALUE_COLUMN_MASK):
+          case MetaMarker.ONLY_ONE_PAGE_TIME_CHUNK_HEADER:
+          case MetaMarker.ONLY_ONE_PAGE_VALUE_CHUNK_HEADER:
             ChunkHeader header = reader.readChunkHeader(marker);
             // read the next measurement and pack data of last measurement
             if (pagePointsNum.size() > 0) {
@@ -461,10 +473,98 @@ public class CompactionCheckerUtils {
         String fullPath = chunkPagePointsNumEntry.getKey();
         List<List<Long>> sourceChunkPages = chunkPagePointsNumEntry.getValue();
         List<List<Long>> mergedChunkPages = mergedChunkPagePointsNum.get(fullPath);
+        if (sourceChunkPages == null) {
+          assertNull(mergedChunkPages);
+          continue;
+        }
         for (int i = 0; i < sourceChunkPages.size(); i++) {
-          for (int j = 0; j < sourceChunkPages.get(0).size(); j++) {
+          for (int j = 0; j < sourceChunkPages.get(i).size(); j++) {
             assertEquals(sourceChunkPages.get(i).get(j), mergedChunkPages.get(i).get(j));
           }
+        }
+      }
+    }
+  }
+
+  /**
+   * Using SeriesRawDataBatchReader to read raw data from files, and return it as a map.
+   *
+   * @param fullPaths
+   * @param schemas
+   * @param sequenceResources
+   * @param unsequenceResources
+   * @return
+   * @throws IllegalPathException
+   * @throws IOException
+   */
+  public static Map<PartialPath, List<TimeValuePair>> getDataByQuery(
+      List<PartialPath> fullPaths,
+      List<IMeasurementSchema> schemas,
+      List<TsFileResource> sequenceResources,
+      List<TsFileResource> unsequenceResources)
+      throws IllegalPathException, IOException {
+    Map<PartialPath, List<TimeValuePair>> pathDataMap = new HashMap<>();
+    for (int i = 0; i < fullPaths.size(); ++i) {
+      FileReaderManager.getInstance().closeAndRemoveAllOpenedReaders();
+      TimeSeriesMetadataCache.getInstance().clear();
+      ChunkCache.getInstance().clear();
+      BloomFilterCache.getInstance().clear();
+
+      PartialPath path = fullPaths.get(i);
+      List<TimeValuePair> dataList = new LinkedList<>();
+
+      IDataBlockReader reader =
+          new SeriesDataBlockReader(
+              path,
+              EnvironmentUtils.TEST_QUERY_FI_CONTEXT,
+              sequenceResources,
+              unsequenceResources,
+              true);
+      while (reader.hasNextBatch()) {
+        TsBlock batchData = reader.nextBatch();
+        TsBlock.TsBlockSingleColumnIterator batchDataIterator =
+            batchData.getTsBlockSingleColumnIterator();
+        while (batchDataIterator.hasNextTimeValuePair()) {
+          dataList.add(batchDataIterator.nextTimeValuePair());
+        }
+      }
+      pathDataMap.put(fullPaths.get(i), dataList);
+
+      TimeSeriesMetadataCache.getInstance().clear();
+      ChunkCache.getInstance().clear();
+    }
+    TimeSeriesMetadataCache.getInstance().clear();
+    ChunkCache.getInstance().clear();
+    return pathDataMap;
+  }
+
+  public static void validDataByValueList(
+      Map<PartialPath, List<TimeValuePair>> expectedData,
+      Map<PartialPath, List<TimeValuePair>> actualData) {
+    for (PartialPath path : expectedData.keySet()) {
+      List<TimeValuePair> expectedTimeValueList = expectedData.get(path);
+      List<TimeValuePair> actualTimeValueList = actualData.get(path);
+
+      if (actualTimeValueList == null) {
+        assertNull(expectedTimeValueList);
+        continue;
+      }
+      assertEquals(expectedTimeValueList.size(), actualTimeValueList.size());
+
+      for (int i = 0; i < expectedTimeValueList.size(); ++i) {
+        TimeValuePair expectedTimeValuePair = expectedTimeValueList.get(i);
+        TimeValuePair actualTimeValuePair = actualTimeValueList.get(i);
+        assertEquals(expectedTimeValuePair.getTimestamp(), actualTimeValuePair.getTimestamp());
+        TSDataType type = expectedTimeValuePair.getValue().getDataType();
+        if (type == TSDataType.VECTOR) {
+          TsPrimitiveType[] expectedVector = expectedTimeValuePair.getValue().getVector();
+          TsPrimitiveType[] actualVector = actualTimeValuePair.getValue().getVector();
+          assertEquals(expectedVector.length, actualVector.length);
+          for (int j = 0; j < expectedVector.length; ++j) {
+            assertEquals(expectedVector[j], actualVector[j]);
+          }
+        } else {
+          assertEquals(expectedTimeValuePair.getValue(), actualTimeValuePair.getValue());
         }
       }
     }

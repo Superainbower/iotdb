@@ -31,12 +31,12 @@ public class IntTVListTest {
 
   @Test
   public void testIntTVList1() {
-    IntTVList tvList = new IntTVList();
+    IntTVList tvList = IntTVList.newList();
     for (int i = 0; i < 1000; i++) {
       tvList.putInt(i, i);
     }
     tvList.sort();
-    for (int i = 0; i < tvList.size; i++) {
+    for (int i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(i, tvList.getInt(i));
       Assert.assertEquals(i, tvList.getTime(i));
     }
@@ -44,12 +44,12 @@ public class IntTVListTest {
 
   @Test
   public void testIntTVList2() {
-    IntTVList tvList = new IntTVList();
+    IntTVList tvList = IntTVList.newList();
     for (int i = 1000; i >= 0; i--) {
       tvList.putInt(i, i);
     }
     tvList.sort();
-    for (int i = 0; i < tvList.size; i++) {
+    for (int i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(i, tvList.getInt(i));
       Assert.assertEquals(i, tvList.getTime(i));
     }
@@ -57,7 +57,7 @@ public class IntTVListTest {
 
   @Test
   public void testPutIntsWithoutBitMap() {
-    IntTVList tvList = new IntTVList();
+    IntTVList tvList = IntTVList.newList();
     List<Integer> intList = new ArrayList<>();
     List<Long> timeList = new ArrayList<>();
     for (int i = 1000; i >= 0; i--) {
@@ -70,15 +70,15 @@ public class IntTVListTest {
         null,
         0,
         1000);
-    for (long i = 0; i < tvList.size; i++) {
-      Assert.assertEquals(tvList.size - i, tvList.getInt((int) i));
-      Assert.assertEquals(tvList.size - i, tvList.getTime((int) i));
+    for (long i = 0; i < tvList.rowCount; i++) {
+      Assert.assertEquals(tvList.rowCount - i, tvList.getInt((int) i));
+      Assert.assertEquals(tvList.rowCount - i, tvList.getTime((int) i));
     }
   }
 
   @Test
   public void testPutIntsWithBitMap() {
-    IntTVList tvList = new IntTVList();
+    IntTVList tvList = IntTVList.newList();
     List<Integer> intList = new ArrayList<>();
     List<Long> timeList = new ArrayList<>();
     BitMap bitMap = new BitMap(1001);
@@ -109,7 +109,7 @@ public class IntTVListTest {
 
   @Test
   public void testClone() {
-    IntTVList tvList = new IntTVList();
+    IntTVList tvList = IntTVList.newList();
     List<Integer> intList = new ArrayList<>();
     List<Long> timeList = new ArrayList<>();
     BitMap bitMap = new BitMap(1001);
@@ -128,7 +128,7 @@ public class IntTVListTest {
         1000);
     tvList.sort();
     IntTVList clonedTvList = tvList.clone();
-    for (long i = 0; i < tvList.size; i++) {
+    for (long i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(tvList.getInt((int) i), clonedTvList.getInt((int) i));
       Assert.assertEquals(tvList.getTime((int) i), clonedTvList.getTime((int) i));
     }

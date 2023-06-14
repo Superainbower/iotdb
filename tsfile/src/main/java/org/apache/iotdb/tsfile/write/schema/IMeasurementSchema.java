@@ -31,6 +31,8 @@ import java.util.Map;
 
 public interface IMeasurementSchema {
 
+  MeasurementSchemaType getSchemaType();
+
   String getMeasurementId();
 
   CompressionType getCompressor();
@@ -38,6 +40,8 @@ public interface IMeasurementSchema {
   TSEncoding getEncodingType();
 
   TSDataType getType();
+
+  byte getTypeInByte();
 
   void setType(TSDataType dataType);
 
@@ -64,6 +68,8 @@ public interface IMeasurementSchema {
   /* test whether the schema contains Measurement with given measurementId */
   boolean containsSubMeasurement(String measurementId);
 
+  int serializedSize();
+
   int serializeTo(ByteBuffer buffer);
 
   int serializeTo(OutputStream outputStream) throws IOException;
@@ -79,4 +85,6 @@ public interface IMeasurementSchema {
    2. add a flag bit at the beginning to distinguish between MeasurementSchema(0) and VectorMeasurementSchema(1)
   */
   int partialSerializeTo(OutputStream outputStream) throws IOException;
+
+  boolean isLogicalView();
 }

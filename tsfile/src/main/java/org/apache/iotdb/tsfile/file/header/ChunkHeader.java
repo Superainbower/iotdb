@@ -21,10 +21,13 @@ package org.apache.iotdb.tsfile.file.header;
 
 import org.apache.iotdb.tsfile.common.conf.TSFileConfig;
 import org.apache.iotdb.tsfile.file.MetaMarker;
+import org.apache.iotdb.tsfile.file.metadata.TimeseriesMetadata;
 import org.apache.iotdb.tsfile.file.metadata.enums.CompressionType;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
+import org.apache.iotdb.tsfile.read.TsFileSequenceReader;
 import org.apache.iotdb.tsfile.read.reader.TsFileInput;
+import org.apache.iotdb.tsfile.utils.Pair;
 import org.apache.iotdb.tsfile.utils.ReadWriteForEncodingUtils;
 import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 
@@ -36,8 +39,8 @@ import java.nio.ByteBuffer;
 public class ChunkHeader {
 
   /**
-   * 1 means this chunk has more than one page, so each page has its own page statistic 5 means this
-   * chunk has only one page, and this page has no page statistic
+   * 1 means this chunk has more than one page, so each page has its own page statistic. 5 means
+   * this chunk has only one page, and this page has no page statistic.
    *
    * <p>if the 8th bit of this byte is 1 means this chunk is a time chunk of one vector if the 7th
    * bit of this byte is 1 means this chunk is a value chunk of one vector
@@ -121,7 +124,8 @@ public class ChunkHeader {
 
   /** the exact serialized size of chunk header */
   public static int getSerializedSize(String measurementID, int dataSize) {
-    int measurementIdLength = measurementID.getBytes(TSFileConfig.STRING_CHARSET).length;
+    int measurementIdLength =
+        measurementID == null ? 0 : measurementID.getBytes(TSFileConfig.STRING_CHARSET).length;
     return Byte.BYTES // chunkType
         + ReadWriteForEncodingUtils.varIntSize(measurementIdLength) // measurementID length
         + measurementIdLength // measurementID
@@ -188,6 +192,24 @@ public class ChunkHeader {
         chunkHeaderSize - Integer.BYTES - 1 + ReadWriteForEncodingUtils.uVarIntSize(dataSize);
     return new ChunkHeader(
         chunkType, measurementID, dataSize, chunkHeaderSize, dataType, type, encoding);
+  }
+
+  /**
+   * Used by {@link
+   * TsFileSequenceReader#readTimeseriesCompressionTypeAndEncoding(TimeseriesMetadata)} to only
+   * decode data size, {@link CompressionType} and {@link TSEncoding}.
+   *
+   * @param inputStream
+   * @return
+   * @throws IOException
+   */
+  public static Pair<CompressionType, TSEncoding> deserializeCompressionTypeAndEncoding(
+      InputStream inputStream) throws IOException {
+    ReadWriteForEncodingUtils.readUnsignedVarInt(inputStream);
+    ReadWriteIOUtils.skip(inputStream, Byte.BYTES); // skip Data type
+    CompressionType type = ReadWriteIOUtils.readCompressionType(inputStream);
+    TSEncoding encoding = ReadWriteIOUtils.readEncoding(inputStream);
+    return new Pair<>(type, encoding);
   }
 
   public int getSerializedSize() {

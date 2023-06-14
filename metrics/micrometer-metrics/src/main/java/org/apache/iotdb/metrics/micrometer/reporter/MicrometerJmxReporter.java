@@ -19,10 +19,11 @@
 
 package org.apache.iotdb.metrics.micrometer.reporter;
 
-import org.apache.iotdb.metrics.MetricManager;
-import org.apache.iotdb.metrics.Reporter;
+import org.apache.iotdb.metrics.AbstractMetricManager;
+import org.apache.iotdb.metrics.reporter.JmxReporter;
 import org.apache.iotdb.metrics.utils.ReporterType;
 
+import io.micrometer.core.instrument.Clock;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.jmx.JmxMeterRegistry;
@@ -32,9 +33,8 @@ import org.slf4j.LoggerFactory;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-public class MicrometerJmxReporter implements Reporter {
+public class MicrometerJmxReporter implements JmxReporter {
   private static final Logger LOGGER = LoggerFactory.getLogger(MicrometerJmxReporter.class);
-  private MetricManager metricManager;
 
   @Override
   public boolean start() {
@@ -43,13 +43,16 @@ public class MicrometerJmxReporter implements Reporter {
           Metrics.globalRegistry.getRegistries().stream()
               .filter(reporter -> reporter instanceof JmxMeterRegistry)
               .collect(Collectors.toSet());
-      for (MeterRegistry meterRegistry : meterRegistrySet) {
-        ((JmxMeterRegistry) meterRegistry).start();
+      if (meterRegistrySet.size() != 0) {
+        LOGGER.warn("Micrometer JmxReporter already start!");
+        return false;
       }
+      Metrics.addRegistry(new JmxMeterRegistry(JmxConfig.DEFAULT, Clock.SYSTEM));
     } catch (Exception e) {
-      LOGGER.error("Failed to start Micrometer JmxReporter, because {}", e.getMessage());
+      LOGGER.warn("Micrometer JmxReporter failed to start, because ", e);
       return false;
     }
+    LOGGER.info("Micrometer JmxReporter start!");
     return true;
   }
 
@@ -61,22 +64,27 @@ public class MicrometerJmxReporter implements Reporter {
               .filter(reporter -> reporter instanceof JmxMeterRegistry)
               .collect(Collectors.toSet());
       for (MeterRegistry meterRegistry : meterRegistrySet) {
-        ((JmxMeterRegistry) meterRegistry).stop();
+        if (!meterRegistry.isClosed()) {
+          ((JmxMeterRegistry) meterRegistry).stop();
+          meterRegistry.close();
+          Metrics.removeRegistry(meterRegistry);
+        }
       }
     } catch (Exception e) {
-      LOGGER.error("Failed to stop Micrometer JmxReporter, because {}", e.getMessage());
+      LOGGER.warn("Micrometer JmxReporter failed to stop, because ", e);
       return false;
     }
+    LOGGER.info("Micrometer JmxReporter stop!");
     return true;
   }
 
   @Override
   public ReporterType getReporterType() {
-    return ReporterType.jmx;
+    return ReporterType.JMX;
   }
 
   @Override
-  public void setMetricManager(MetricManager metricManager) {
-    this.metricManager = metricManager;
+  public void setMetricManager(AbstractMetricManager metricManager) {
+    // do nothing
   }
 }

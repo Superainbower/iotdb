@@ -19,12 +19,22 @@
 package org.apache.iotdb.db.engine.memtable;
 
 import org.apache.iotdb.db.utils.datastructure.TVList;
+import org.apache.iotdb.db.wal.buffer.IWALByteBufferView;
 import org.apache.iotdb.tsfile.exception.write.UnSupportedDataTypeException;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.utils.Binary;
 import org.apache.iotdb.tsfile.utils.BitMap;
+import org.apache.iotdb.tsfile.write.chunk.ChunkWriterImpl;
+import org.apache.iotdb.tsfile.write.chunk.IChunkWriter;
 import org.apache.iotdb.tsfile.write.schema.IMeasurementSchema;
+import org.apache.iotdb.tsfile.write.schema.MeasurementSchema;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.List;
 
 public class WritableMemChunk implements IWritableMemChunk {
@@ -32,14 +42,17 @@ public class WritableMemChunk implements IWritableMemChunk {
   private IMeasurementSchema schema;
   private TVList list;
   private static final String UNSUPPORTED_TYPE = "Unsupported data type:";
+  private static final Logger LOGGER = LoggerFactory.getLogger(WritableMemChunk.class);
 
-  public WritableMemChunk(IMeasurementSchema schema, TVList list) {
+  public WritableMemChunk(IMeasurementSchema schema) {
     this.schema = schema;
-    this.list = list;
+    this.list = TVList.newList(schema.getType());
   }
 
+  private WritableMemChunk() {}
+
   @Override
-  public void write(long insertTime, Object objectValue) {
+  public boolean writeWithFlushCheck(long insertTime, Object objectValue) {
     switch (schema.getType()) {
       case BOOLEAN:
         putBoolean(insertTime, (boolean) objectValue);
@@ -57,51 +70,61 @@ public class WritableMemChunk implements IWritableMemChunk {
         putDouble(insertTime, (double) objectValue);
         break;
       case TEXT:
-        putBinary(insertTime, (Binary) objectValue);
-        break;
-      case VECTOR:
-        putVector(insertTime, (Object[]) objectValue);
-        break;
+        return putBinaryWithFlushCheck(insertTime, (Binary) objectValue);
       default:
         throw new UnSupportedDataTypeException(UNSUPPORTED_TYPE + schema.getType());
     }
+    return false;
   }
 
   @Override
-  public void write(
-      long[] times, Object valueList, Object bitMap, TSDataType dataType, int start, int end) {
+  public boolean writeAlignedValueWithFlushCheck(
+      long insertTime, Object[] objectValue, List<IMeasurementSchema> schemaList) {
+    throw new UnSupportedDataTypeException(UNSUPPORTED_TYPE + list.getDataType());
+  }
+
+  @Override
+  public boolean writeWithFlushCheck(
+      long[] times, Object valueList, BitMap bitMap, TSDataType dataType, int start, int end) {
     switch (dataType) {
       case BOOLEAN:
         boolean[] boolValues = (boolean[]) valueList;
-        putBooleans(times, boolValues, (BitMap) bitMap, start, end);
+        putBooleans(times, boolValues, bitMap, start, end);
         break;
       case INT32:
         int[] intValues = (int[]) valueList;
-        putInts(times, intValues, (BitMap) bitMap, start, end);
+        putInts(times, intValues, bitMap, start, end);
         break;
       case INT64:
         long[] longValues = (long[]) valueList;
-        putLongs(times, longValues, (BitMap) bitMap, start, end);
+        putLongs(times, longValues, bitMap, start, end);
         break;
       case FLOAT:
         float[] floatValues = (float[]) valueList;
-        putFloats(times, floatValues, (BitMap) bitMap, start, end);
+        putFloats(times, floatValues, bitMap, start, end);
         break;
       case DOUBLE:
         double[] doubleValues = (double[]) valueList;
-        putDoubles(times, doubleValues, (BitMap) bitMap, start, end);
+        putDoubles(times, doubleValues, bitMap, start, end);
         break;
       case TEXT:
         Binary[] binaryValues = (Binary[]) valueList;
-        putBinaries(times, binaryValues, (BitMap) bitMap, start, end);
-        break;
-      case VECTOR:
-        Object[] vectorValues = (Object[]) valueList;
-        putVectors(times, vectorValues, (BitMap[]) bitMap, start, end);
-        break;
+        return putBinariesWithFlushCheck(times, binaryValues, bitMap, start, end);
       default:
         throw new UnSupportedDataTypeException(UNSUPPORTED_TYPE + dataType);
     }
+    return false;
+  }
+
+  @Override
+  public boolean writeAlignedValuesWithFlushCheck(
+      long[] times,
+      Object[] valueList,
+      BitMap[] bitMaps,
+      List<IMeasurementSchema> schemaList,
+      int start,
+      int end) {
+    throw new UnSupportedDataTypeException(UNSUPPORTED_TYPE + list.getDataType());
   }
 
   @Override
@@ -125,8 +148,9 @@ public class WritableMemChunk implements IWritableMemChunk {
   }
 
   @Override
-  public void putBinary(long t, Binary v) {
+  public boolean putBinaryWithFlushCheck(long t, Binary v) {
     list.putBinary(t, v);
+    return list.reachMaxChunkSizeThreshold();
   }
 
   @Override
@@ -135,8 +159,8 @@ public class WritableMemChunk implements IWritableMemChunk {
   }
 
   @Override
-  public void putVector(long t, Object[] v) {
-    list.putVector(t, v);
+  public boolean putAlignedValueWithFlushCheck(long t, Object[] v) {
+    throw new UnSupportedDataTypeException(UNSUPPORTED_TYPE + schema.getType());
   }
 
   @Override
@@ -160,8 +184,10 @@ public class WritableMemChunk implements IWritableMemChunk {
   }
 
   @Override
-  public void putBinaries(long[] t, Binary[] v, BitMap bitMap, int start, int end) {
+  public boolean putBinariesWithFlushCheck(
+      long[] t, Binary[] v, BitMap bitMap, int start, int end) {
     list.putBinaries(t, v, bitMap, start, end);
+    return list.reachMaxChunkSizeThreshold();
   }
 
   @Override
@@ -170,8 +196,9 @@ public class WritableMemChunk implements IWritableMemChunk {
   }
 
   @Override
-  public void putVectors(long[] t, Object[] v, BitMap[] bitMaps, int start, int end) {
-    list.putVectors(t, v, bitMaps, start, end);
+  public boolean putAlignedValuesWithFlushCheck(
+      long[] t, Object[] v, BitMap[] bitMaps, int start, int end) {
+    throw new UnSupportedDataTypeException(UNSUPPORTED_TYPE + schema.getType());
   }
 
   @Override
@@ -183,14 +210,8 @@ public class WritableMemChunk implements IWritableMemChunk {
   }
 
   @Override
-  public synchronized TVList getSortedTvListForQuery(List<Integer> columnIndexList) {
-    if (list.getDataType() != TSDataType.VECTOR) {
-      throw new UnSupportedDataTypeException(UNSUPPORTED_TYPE + list.getDataType());
-    }
-    sortTVList();
-    // increase reference count
-    list.increaseReferenceCount();
-    return list.getTvListByColumnIndex(columnIndexList);
+  public synchronized TVList getSortedTvListForQuery(List<IMeasurementSchema> measurementSchema) {
+    throw new UnSupportedDataTypeException(UNSUPPORTED_TYPE + list.getDataType());
   }
 
   private void sortTVList() {
@@ -205,9 +226,8 @@ public class WritableMemChunk implements IWritableMemChunk {
   }
 
   @Override
-  public synchronized TVList getSortedTvListForFlush() {
+  public synchronized void sortTvListForFlush() {
     sortTVList();
-    return list;
   }
 
   @Override
@@ -217,7 +237,7 @@ public class WritableMemChunk implements IWritableMemChunk {
 
   @Override
   public long count() {
-    return list.size();
+    return list.rowCount();
   }
 
   @Override
@@ -226,24 +246,31 @@ public class WritableMemChunk implements IWritableMemChunk {
   }
 
   @Override
-  public long getMinTime() {
-    return list.getMinTime();
+  public long getMaxTime() {
+    return list.getMaxTime();
   }
 
-  public Long getFirstPoint() {
-    if (list.size() == 0) {
+  @Override
+  public long getFirstPoint() {
+    if (list.rowCount() == 0) {
       return Long.MAX_VALUE;
     }
     return getSortedTvListForQuery().getTimeValuePair(0).getTimestamp();
   }
 
-  public Long getLastPoint() {
-    if (list.size() == 0) {
+  @Override
+  public long getLastPoint() {
+    if (list.rowCount() == 0) {
       return Long.MIN_VALUE;
     }
     return getSortedTvListForQuery()
-        .getTimeValuePair(getSortedTvListForQuery().size() - 1)
+        .getTimeValuePair(getSortedTvListForQuery().rowCount() - 1)
         .getTimestamp();
+  }
+
+  @Override
+  public boolean isEmpty() {
+    return list.rowCount() == 0;
   }
 
   @Override
@@ -251,15 +278,14 @@ public class WritableMemChunk implements IWritableMemChunk {
     return list.delete(lowerBound, upperBound);
   }
 
-  // TODO: THIS METHOLD IS FOR DELETING ONE COLUMN OF A VECTOR
   @Override
-  public int delete(long lowerBound, long upperBound, int columnIndex) {
-    return list.delete(lowerBound, upperBound, columnIndex);
+  public IChunkWriter createIChunkWriter() {
+    return new ChunkWriterImpl(schema);
   }
 
   @Override
   public String toString() {
-    int size = list.size();
+    int size = list.rowCount();
     int firstIndex = 0;
     int lastIndex = size - 1;
     long minTime = Long.MAX_VALUE;
@@ -287,5 +313,77 @@ public class WritableMemChunk implements IWritableMemChunk {
           .append(System.lineSeparator());
     }
     return out.toString();
+  }
+
+  @Override
+  public void encode(IChunkWriter chunkWriter) {
+
+    ChunkWriterImpl chunkWriterImpl = (ChunkWriterImpl) chunkWriter;
+
+    for (int sortedRowIndex = 0; sortedRowIndex < list.rowCount(); sortedRowIndex++) {
+      long time = list.getTime(sortedRowIndex);
+
+      // skip duplicated data
+      if ((sortedRowIndex + 1 < list.rowCount() && (time == list.getTime(sortedRowIndex + 1)))) {
+        continue;
+      }
+
+      // store last point for SDT
+      if (sortedRowIndex + 1 == list.rowCount()) {
+        ((ChunkWriterImpl) chunkWriterImpl).setLastPoint(true);
+      }
+
+      switch (schema.getType()) {
+        case BOOLEAN:
+          chunkWriterImpl.write(time, list.getBoolean(sortedRowIndex));
+          break;
+        case INT32:
+          chunkWriterImpl.write(time, list.getInt(sortedRowIndex));
+          break;
+        case INT64:
+          chunkWriterImpl.write(time, list.getLong(sortedRowIndex));
+          break;
+        case FLOAT:
+          chunkWriterImpl.write(time, list.getFloat(sortedRowIndex));
+          break;
+        case DOUBLE:
+          chunkWriterImpl.write(time, list.getDouble(sortedRowIndex));
+          break;
+        case TEXT:
+          chunkWriterImpl.write(time, list.getBinary(sortedRowIndex));
+          break;
+        default:
+          LOGGER.error("WritableMemChunk does not support data type: {}", schema.getType());
+          break;
+      }
+    }
+  }
+
+  @Override
+  public void release() {
+    if (list.getReferenceCount() == 0) {
+      list.clear();
+    }
+  }
+
+  @Override
+  public int serializedSize() {
+    return schema.serializedSize() + list.serializedSize();
+  }
+
+  @Override
+  public void serializeToWAL(IWALByteBufferView buffer) {
+    byte[] bytes = new byte[schema.serializedSize()];
+    schema.serializeTo(ByteBuffer.wrap(bytes));
+    buffer.put(bytes);
+
+    list.serializeToWAL(buffer);
+  }
+
+  public static WritableMemChunk deserialize(DataInputStream stream) throws IOException {
+    WritableMemChunk memChunk = new WritableMemChunk();
+    memChunk.schema = MeasurementSchema.deserializeFrom(stream);
+    memChunk.list = TVList.deserialize(stream);
+    return memChunk;
   }
 }

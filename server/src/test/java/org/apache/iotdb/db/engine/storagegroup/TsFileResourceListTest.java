@@ -25,6 +25,7 @@ import org.junit.Assert;
 import org.junit.Test;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -62,6 +63,36 @@ public class TsFileResourceListTest {
     while (iterator.hasNext()) {
       Assert.assertSame(tsFileResources.get(index++), iterator.next());
     }
+  }
+
+  @Test
+  public void testKeepOrderInsert() throws Exception {
+    TsFileResourceList tsFileResourceList = new TsFileResourceList();
+    TsFileResource resource1 = generateTsFileResource(10);
+    // 10
+    tsFileResourceList.keepOrderInsert(resource1);
+    Assert.assertEquals(resource1, tsFileResourceList.get(0));
+    Assert.assertEquals(1, tsFileResourceList.size());
+    TsFileResource resource2 = generateTsFileResource(100);
+    // 10 100
+    tsFileResourceList.keepOrderInsert(resource2);
+    Assert.assertEquals(resource2, tsFileResourceList.get(1));
+    Assert.assertEquals(2, tsFileResourceList.size());
+    TsFileResource resource3 = generateTsFileResource(50);
+    // 10 50 100
+    tsFileResourceList.keepOrderInsert(resource3);
+    Assert.assertEquals(resource3, tsFileResourceList.get(1));
+    Assert.assertEquals(3, tsFileResourceList.size());
+    TsFileResource resource4 = generateTsFileResource(75);
+    // 10 50 75 100
+    tsFileResourceList.keepOrderInsert(resource4);
+    Assert.assertEquals(resource4, tsFileResourceList.get(2));
+    Assert.assertEquals(4, tsFileResourceList.size());
+    TsFileResource resource5 = generateTsFileResource(5);
+    // 5 10 50 75 100
+    tsFileResourceList.keepOrderInsert(resource5);
+    Assert.assertEquals(resource5, tsFileResourceList.get(0));
+    Assert.assertEquals(5, tsFileResourceList.size());
   }
 
   @Test
@@ -181,5 +212,114 @@ public class TsFileResourceListTest {
     Assert.assertEquals(
         tsFileResourceList.getHeader(), tsFileResources.get(tsFileResources.size() - 1));
     Assert.assertEquals(tsFileResourceList.getTail(), tsFileResources.get(0));
+  }
+
+  /** Seq files: 1-1, 1-5, 1-6, 2-4, 3-3, 4-7, 4-9, 5-8 */
+  @Test
+  public void testKeepOrderInsertWithSameTimestampAndDifferentVersion() throws IOException {
+    List<TsFileResource> seqResources = new ArrayList<>();
+    seqResources.add(
+        new TsFileResource(
+            new File(
+                TsFileNameGenerator.generateNewTsFilePath(
+                    TestConstant.BASE_OUTPUT_PATH, 1, 1, 0, 0))));
+    seqResources.add(
+        new TsFileResource(
+            new File(
+                TsFileNameGenerator.generateNewTsFilePath(
+                    TestConstant.BASE_OUTPUT_PATH, 1, 5, 0, 0))));
+    seqResources.add(
+        new TsFileResource(
+            new File(
+                TsFileNameGenerator.generateNewTsFilePath(
+                    TestConstant.BASE_OUTPUT_PATH, 1, 6, 0, 0))));
+    seqResources.add(
+        new TsFileResource(
+            new File(
+                TsFileNameGenerator.generateNewTsFilePath(
+                    TestConstant.BASE_OUTPUT_PATH, 2, 4, 0, 0))));
+    seqResources.add(
+        new TsFileResource(
+            new File(
+                TsFileNameGenerator.generateNewTsFilePath(
+                    TestConstant.BASE_OUTPUT_PATH, 3, 3, 0, 0))));
+    seqResources.add(
+        new TsFileResource(
+            new File(
+                TsFileNameGenerator.generateNewTsFilePath(
+                    TestConstant.BASE_OUTPUT_PATH, 4, 7, 0, 0))));
+    seqResources.add(
+        new TsFileResource(
+            new File(
+                TsFileNameGenerator.generateNewTsFilePath(
+                    TestConstant.BASE_OUTPUT_PATH, 4, 9, 0, 0))));
+    seqResources.add(
+        new TsFileResource(
+            new File(
+                TsFileNameGenerator.generateNewTsFilePath(
+                    TestConstant.BASE_OUTPUT_PATH, 5, 8, 0, 0))));
+
+    TsFileResourceList tsFileResourceList = new TsFileResourceList();
+    tsFileResourceList.keepOrderInsert(seqResources.get(4));
+    tsFileResourceList.keepOrderInsert(seqResources.get(3));
+    tsFileResourceList.keepOrderInsert(seqResources.get(5));
+    tsFileResourceList.keepOrderInsert(seqResources.get(1));
+    tsFileResourceList.keepOrderInsert(seqResources.get(0));
+    tsFileResourceList.keepOrderInsert(seqResources.get(2));
+    tsFileResourceList.keepOrderInsert(seqResources.get(6));
+    tsFileResourceList.keepOrderInsert(seqResources.get(7));
+    Assert.assertEquals(seqResources, tsFileResourceList.getArrayList());
+
+    for (TsFileResource resource : seqResources) {
+      tsFileResourceList.remove(resource);
+    }
+    tsFileResourceList.keepOrderInsert(seqResources.get(0));
+    tsFileResourceList.keepOrderInsert(seqResources.get(4));
+    tsFileResourceList.keepOrderInsert(seqResources.get(5));
+    tsFileResourceList.keepOrderInsert(seqResources.get(7));
+    tsFileResourceList.keepOrderInsert(seqResources.get(2));
+    tsFileResourceList.keepOrderInsert(seqResources.get(1));
+    tsFileResourceList.keepOrderInsert(seqResources.get(3));
+    tsFileResourceList.keepOrderInsert(seqResources.get(6));
+    Assert.assertEquals(seqResources, tsFileResourceList.getArrayList());
+
+    for (TsFileResource resource : seqResources) {
+      tsFileResourceList.remove(resource);
+    }
+    tsFileResourceList.keepOrderInsert(seqResources.get(7));
+    tsFileResourceList.keepOrderInsert(seqResources.get(1));
+    tsFileResourceList.keepOrderInsert(seqResources.get(5));
+    tsFileResourceList.keepOrderInsert(seqResources.get(6));
+    tsFileResourceList.keepOrderInsert(seqResources.get(2));
+    tsFileResourceList.keepOrderInsert(seqResources.get(4));
+    tsFileResourceList.keepOrderInsert(seqResources.get(3));
+    tsFileResourceList.keepOrderInsert(seqResources.get(0));
+    Assert.assertEquals(seqResources, tsFileResourceList.getArrayList());
+
+    for (TsFileResource resource : seqResources) {
+      tsFileResourceList.remove(resource);
+    }
+    tsFileResourceList.keepOrderInsert(seqResources.get(0));
+    tsFileResourceList.keepOrderInsert(seqResources.get(1));
+    tsFileResourceList.keepOrderInsert(seqResources.get(2));
+    tsFileResourceList.keepOrderInsert(seqResources.get(3));
+    tsFileResourceList.keepOrderInsert(seqResources.get(4));
+    tsFileResourceList.keepOrderInsert(seqResources.get(5));
+    tsFileResourceList.keepOrderInsert(seqResources.get(6));
+    tsFileResourceList.keepOrderInsert(seqResources.get(7));
+    Assert.assertEquals(seqResources, tsFileResourceList.getArrayList());
+
+    for (TsFileResource resource : seqResources) {
+      tsFileResourceList.remove(resource);
+    }
+    tsFileResourceList.keepOrderInsert(seqResources.get(7));
+    tsFileResourceList.keepOrderInsert(seqResources.get(6));
+    tsFileResourceList.keepOrderInsert(seqResources.get(5));
+    tsFileResourceList.keepOrderInsert(seqResources.get(4));
+    tsFileResourceList.keepOrderInsert(seqResources.get(3));
+    tsFileResourceList.keepOrderInsert(seqResources.get(2));
+    tsFileResourceList.keepOrderInsert(seqResources.get(1));
+    tsFileResourceList.keepOrderInsert(seqResources.get(0));
+    Assert.assertEquals(seqResources, tsFileResourceList.getArrayList());
   }
 }

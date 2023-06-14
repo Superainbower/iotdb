@@ -20,11 +20,10 @@
 package org.apache.iotdb.db.engine.compaction.inner;
 
 import org.apache.iotdb.db.constant.TestConstant;
-import org.apache.iotdb.db.engine.compaction.CompactionScheduler;
+import org.apache.iotdb.db.engine.compaction.schedule.CompactionScheduler;
+import org.apache.iotdb.db.engine.compaction.schedule.CompactionTaskManager;
 import org.apache.iotdb.db.engine.storagegroup.TsFileManager;
 import org.apache.iotdb.db.exception.StorageEngineException;
-import org.apache.iotdb.db.exception.metadata.MetadataException;
-import org.apache.iotdb.tsfile.exception.write.WriteProcessException;
 import org.apache.iotdb.tsfile.fileSystem.FSFactoryProducer;
 
 import org.apache.commons.io.FileUtils;
@@ -36,7 +35,7 @@ import org.junit.Test;
 import java.io.File;
 import java.io.IOException;
 
-import static org.apache.iotdb.db.engine.compaction.inner.utils.SizeTieredCompactionLogger.COMPACTION_LOG_NAME;
+import static org.apache.iotdb.db.engine.compaction.execute.utils.log.CompactionLogger.INNER_COMPACTION_LOG_NAME_SUFFIX;
 import static org.junit.Assert.assertFalse;
 
 public class InnerCompactionLogTest extends InnerCompactionTest {
@@ -45,7 +44,7 @@ public class InnerCompactionLogTest extends InnerCompactionTest {
 
   @Override
   @Before
-  public void setUp() throws IOException, WriteProcessException, MetadataException {
+  public void setUp() throws Exception {
     tempSGDir = new File(TestConstant.getTestTsFileDir("root.compactionTest", 0, 0));
     if (!tempSGDir.exists()) {
       Assert.assertTrue(tempSGDir.mkdirs());
@@ -68,12 +67,17 @@ public class InnerCompactionLogTest extends InnerCompactionTest {
     tsFileManager.addAll(seqResources, true);
     tsFileManager.addAll(unseqResources, false);
     CompactionScheduler.scheduleCompaction(tsFileManager, 0);
-    while (CompactionScheduler.isPartitionCompacting(COMPACTION_TEST_SG, 0)) {
+    try {
+      Thread.sleep(1000);
+    } catch (Exception e) {
+
+    }
+    while (CompactionTaskManager.getInstance().getExecutingTaskCount() > 0) {
       // wait
     }
     File logFile =
         FSFactoryProducer.getFSFactory()
-            .getFile(tempSGDir.getPath(), COMPACTION_TEST_SG + COMPACTION_LOG_NAME);
+            .getFile(tempSGDir.getPath(), COMPACTION_TEST_SG + INNER_COMPACTION_LOG_NAME_SUFFIX);
     assertFalse(logFile.exists());
   }
 }

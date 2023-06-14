@@ -18,9 +18,11 @@
  */
 package org.apache.iotdb.tsfile.write.chunk;
 
+import org.apache.iotdb.tsfile.common.conf.TSFileDescriptor;
 import org.apache.iotdb.tsfile.common.constant.TsFileConstant;
 import org.apache.iotdb.tsfile.compress.ICompressor;
 import org.apache.iotdb.tsfile.encoding.encoder.Encoder;
+import org.apache.iotdb.tsfile.exception.write.PageException;
 import org.apache.iotdb.tsfile.file.header.ChunkHeader;
 import org.apache.iotdb.tsfile.file.header.PageHeader;
 import org.apache.iotdb.tsfile.file.metadata.enums.CompressionType;
@@ -29,6 +31,7 @@ import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
 import org.apache.iotdb.tsfile.file.metadata.statistics.Statistics;
 import org.apache.iotdb.tsfile.utils.Binary;
 import org.apache.iotdb.tsfile.utils.PublicBAOS;
+import org.apache.iotdb.tsfile.utils.ReadWriteForEncodingUtils;
 import org.apache.iotdb.tsfile.write.page.ValuePageWriter;
 import org.apache.iotdb.tsfile.write.writer.TsFileIOWriter;
 
@@ -37,6 +40,9 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.WritableByteChannel;
 
 public class ValueChunkWriter {
 
@@ -58,6 +64,17 @@ public class ValueChunkWriter {
   /** write data into current page */
   private ValuePageWriter pageWriter;
 
+  /** page size threshold. */
+  private final long pageSizeThreshold;
+
+  private final int maxNumberOfPointsInPage;
+
+  /** value count in current page. */
+  private int valueCountInOnePageForNextCheck;
+
+  // initial value for valueCountInOnePageForNextCheck
+  private static final int MINIMUM_RECORD_COUNT_FOR_CHECK = 1500;
+
   /** statistic of this chunk. */
   private Statistics<? extends Serializable> statistics;
 
@@ -77,6 +94,10 @@ public class ValueChunkWriter {
     this.dataType = dataType;
     this.compressionType = compressionType;
     this.pageBuffer = new PublicBAOS();
+    this.pageSizeThreshold = TSFileDescriptor.getInstance().getConfig().getPageSizeInByte();
+    this.maxNumberOfPointsInPage =
+        TSFileDescriptor.getInstance().getConfig().getMaxNumberOfPointsInPage();
+    this.valueCountInOnePageForNextCheck = MINIMUM_RECORD_COUNT_FOR_CHECK;
 
     // init statistics for this chunk and page
     this.statistics = Statistics.getStatsByType(dataType);
@@ -109,41 +130,60 @@ public class ValueChunkWriter {
     pageWriter.write(time, value, isNull);
   }
 
-  public void write(long[] timestamps, int[] values, int batchSize) {
-    pageWriter.write(timestamps, values, batchSize);
+  public void write(long[] timestamps, int[] values, boolean[] isNull, int batchSize, int pos) {
+    pageWriter.write(timestamps, values, isNull, batchSize, pos);
   }
 
-  public void write(long[] timestamps, long[] values, int batchSize) {
-    pageWriter.write(timestamps, values, batchSize);
+  public void write(long[] timestamps, long[] values, boolean[] isNull, int batchSize, int pos) {
+    pageWriter.write(timestamps, values, isNull, batchSize, pos);
   }
 
-  public void write(long[] timestamps, boolean[] values, int batchSize) {
-    pageWriter.write(timestamps, values, batchSize);
+  public void write(long[] timestamps, boolean[] values, boolean[] isNull, int batchSize, int pos) {
+    pageWriter.write(timestamps, values, isNull, batchSize, pos);
   }
 
-  public void write(long[] timestamps, float[] values, int batchSize) {
-    pageWriter.write(timestamps, values, batchSize);
+  public void write(long[] timestamps, float[] values, boolean[] isNull, int batchSize, int pos) {
+    pageWriter.write(timestamps, values, isNull, batchSize, pos);
   }
 
-  public void write(long[] timestamps, double[] values, int batchSize) {
-    pageWriter.write(timestamps, values, batchSize);
+  public void write(long[] timestamps, double[] values, boolean[] isNull, int batchSize, int pos) {
+    pageWriter.write(timestamps, values, isNull, batchSize, pos);
   }
 
-  public void write(long[] timestamps, Binary[] values, int batchSize) {
-    pageWriter.write(timestamps, values, batchSize);
+  public void write(long[] timestamps, Binary[] values, boolean[] isNull, int batchSize, int pos) {
+    pageWriter.write(timestamps, values, isNull, batchSize, pos);
+  }
+
+  public void writeEmptyPageToPageBuffer() throws IOException {
+    if (numOfPages == 1 && firstPageStatistics != null) {
+      // if the first page is not an empty page
+      byte[] b = pageBuffer.toByteArray();
+      pageBuffer.reset();
+      pageBuffer.write(b, 0, this.sizeWithoutStatistic);
+      firstPageStatistics.serialize(pageBuffer);
+      pageBuffer.write(b, this.sizeWithoutStatistic, b.length - this.sizeWithoutStatistic);
+      firstPageStatistics = null;
+    }
+    pageWriter.writeEmptyPageIntoBuff(pageBuffer);
+    numOfPages++;
   }
 
   public void writePageToPageBuffer() {
     try {
-      if (numOfPages == 0) { // record the firstPageStatistics
-        this.firstPageStatistics = pageWriter.getStatistics();
+      if (numOfPages == 0) {
+        if (pageWriter.getStatistics().getCount() != 0) {
+          // record the firstPageStatistics if it is not empty page
+          this.firstPageStatistics = pageWriter.getStatistics();
+        }
         this.sizeWithoutStatistic = pageWriter.writePageHeaderAndDataIntoBuff(pageBuffer, true);
       } else if (numOfPages == 1) { // put the firstPageStatistics into pageBuffer
-        byte[] b = pageBuffer.toByteArray();
-        pageBuffer.reset();
-        pageBuffer.write(b, 0, this.sizeWithoutStatistic);
-        firstPageStatistics.serialize(pageBuffer);
-        pageBuffer.write(b, this.sizeWithoutStatistic, b.length - this.sizeWithoutStatistic);
+        if (firstPageStatistics != null) { // Consider previous page is an empty page
+          byte[] b = pageBuffer.toByteArray();
+          pageBuffer.reset();
+          pageBuffer.write(b, 0, this.sizeWithoutStatistic);
+          firstPageStatistics.serialize(pageBuffer);
+          pageBuffer.write(b, this.sizeWithoutStatistic, b.length - this.sizeWithoutStatistic);
+        }
         pageWriter.writePageHeaderAndDataIntoBuff(pageBuffer, false);
         firstPageStatistics = null;
       } else {
@@ -161,6 +201,57 @@ public class ValueChunkWriter {
     }
   }
 
+  public void writePageHeaderAndDataIntoBuff(ByteBuffer data, PageHeader header)
+      throws PageException {
+    // write the page header to pageBuffer
+    try {
+      logger.debug(
+          "start to flush a page header into buffer, buffer position {} ", pageBuffer.size());
+      // serialize pageHeader  see writePageToPageBuffer method
+      if (numOfPages == 0) { // record the firstPageStatistics
+        if (header.getStatistics() != null) {
+          this.firstPageStatistics = header.getStatistics();
+        }
+        this.sizeWithoutStatistic +=
+            ReadWriteForEncodingUtils.writeUnsignedVarInt(header.getUncompressedSize(), pageBuffer);
+        this.sizeWithoutStatistic +=
+            ReadWriteForEncodingUtils.writeUnsignedVarInt(header.getCompressedSize(), pageBuffer);
+      } else if (numOfPages == 1) { // put the firstPageStatistics into pageBuffer
+        if (firstPageStatistics != null) {
+          byte[] b = pageBuffer.toByteArray();
+          pageBuffer.reset();
+          pageBuffer.write(b, 0, this.sizeWithoutStatistic);
+          firstPageStatistics.serialize(pageBuffer);
+          pageBuffer.write(b, this.sizeWithoutStatistic, b.length - this.sizeWithoutStatistic);
+        }
+        ReadWriteForEncodingUtils.writeUnsignedVarInt(header.getUncompressedSize(), pageBuffer);
+        ReadWriteForEncodingUtils.writeUnsignedVarInt(header.getCompressedSize(), pageBuffer);
+        header.getStatistics().serialize(pageBuffer);
+        firstPageStatistics = null;
+      } else {
+        ReadWriteForEncodingUtils.writeUnsignedVarInt(header.getUncompressedSize(), pageBuffer);
+        ReadWriteForEncodingUtils.writeUnsignedVarInt(header.getCompressedSize(), pageBuffer);
+        header.getStatistics().serialize(pageBuffer);
+      }
+      logger.debug(
+          "finish to flush a page header {} of time page into buffer, buffer position {} ",
+          header,
+          pageBuffer.size());
+
+      statistics.mergeStatistics(header.getStatistics());
+
+    } catch (IOException e) {
+      throw new PageException("IO Exception in writeDataPageHeader,ignore this page", e);
+    }
+    numOfPages++;
+    // write page content to temp PBAOS
+    try (WritableByteChannel channel = Channels.newChannel(pageBuffer)) {
+      channel.write(data);
+    } catch (IOException e) {
+      throw new PageException(e);
+    }
+  }
+
   public void writeToFileWriter(TsFileIOWriter tsfileWriter) throws IOException {
     sealCurrentPage();
     writeAllPagesOfChunkToTsFile(tsfileWriter);
@@ -168,6 +259,7 @@ public class ValueChunkWriter {
     // reinit this chunk writer
     pageBuffer.reset();
     numOfPages = 0;
+    sizeWithoutStatistic = 0;
     firstPageStatistics = null;
     this.statistics = Statistics.getStatsByType(dataType);
   }
@@ -180,12 +272,50 @@ public class ValueChunkWriter {
   }
 
   public long getCurrentChunkSize() {
+    /**
+     * It may happen if subsequent write operations are all out of order, then count of statistics
+     * in this chunk will be 0 and this chunk will not be flushed.
+     */
     if (pageBuffer.size() == 0) {
       return 0;
     }
+
+    // Empty chunk, it may happen if pageBuffer stores empty bits and only chunk header will be
+    // flushed.
+    if (statistics.getCount() == 0) {
+      return ChunkHeader.getSerializedSize(measurementId, 0);
+    }
+
     // return the serialized size of the chunk header + all pages
     return ChunkHeader.getSerializedSize(measurementId, pageBuffer.size())
         + (long) pageBuffer.size();
+  }
+
+  public boolean checkPageSizeAndMayOpenANewPage() {
+    if (pageWriter.getPointNumber() == maxNumberOfPointsInPage) {
+      logger.debug("current line count reaches the upper bound, write page {}", measurementId);
+      return true;
+    } else if (pageWriter.getPointNumber()
+        >= valueCountInOnePageForNextCheck) { // need to check memory size
+      // not checking the memory used for every value
+      long currentPageSize = pageWriter.estimateMaxMemSize();
+      if (currentPageSize > pageSizeThreshold) { // memory size exceeds threshold
+        // we will write the current page
+        logger.debug(
+            "enough size, write page {}, pageSizeThreshold:{}, currentPageSize:{}, valueCountInOnePage:{}",
+            measurementId,
+            pageSizeThreshold,
+            currentPageSize,
+            pageWriter.getPointNumber());
+        valueCountInOnePageForNextCheck = MINIMUM_RECORD_COUNT_FOR_CHECK;
+        return true;
+      } else {
+        // reset the valueCountInOnePageForNextCheck for the next page
+        valueCountInOnePageForNextCheck =
+            (int) (((float) pageSizeThreshold / currentPageSize) * pageWriter.getPointNumber());
+      }
+    }
+    return false;
   }
 
   public void sealCurrentPage() {
@@ -215,6 +345,23 @@ public class ValueChunkWriter {
    */
   public void writeAllPagesOfChunkToTsFile(TsFileIOWriter writer) throws IOException {
     if (statistics.getCount() == 0) {
+      if (pageBuffer.size() == 0) {
+        return;
+      }
+      // In order to ensure that different chunkgroups in a tsfile have the same chunks or if all
+      // data of this timeseries has been deleted, it is possible to have an empty valueChunk in a
+      // chunkGroup during compaction. To save the disk space, we only serialize chunkHeader for the
+      // empty valueChunk, whose dataSize is 0.
+      writer.startFlushChunk(
+          measurementId,
+          compressionType,
+          dataType,
+          encodingType,
+          statistics,
+          0,
+          0,
+          TsFileConstant.VALUE_COLUMN_MASK);
+      writer.endCurrentChunk();
       return;
     }
 
@@ -247,8 +394,28 @@ public class ValueChunkWriter {
     writer.endCurrentChunk();
   }
 
+  public String getMeasurementId() {
+    return measurementId;
+  }
+
+  public TSEncoding getEncodingType() {
+    return encodingType;
+  }
+
+  public CompressionType getCompressionType() {
+    return compressionType;
+  }
+
   /** only used for test */
   public PublicBAOS getPageBuffer() {
     return pageBuffer;
+  }
+
+  public boolean checkIsUnsealedPageOverThreshold(long size) {
+    return pageWriter.estimateMaxMemSize() >= size;
+  }
+
+  public ValuePageWriter getPageWriter() {
+    return pageWriter;
   }
 }

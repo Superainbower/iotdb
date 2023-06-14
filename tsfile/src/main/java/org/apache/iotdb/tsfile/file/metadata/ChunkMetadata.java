@@ -18,8 +18,6 @@
  */
 package org.apache.iotdb.tsfile.file.metadata;
 
-import org.apache.iotdb.tsfile.common.cache.Accountable;
-import org.apache.iotdb.tsfile.common.constant.TsFileConstant;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.statistics.Statistics;
 import org.apache.iotdb.tsfile.read.common.TimeRange;
@@ -38,7 +36,7 @@ import java.util.List;
 import java.util.Objects;
 
 /** Metadata of one chunk. */
-public class ChunkMetadata implements Accountable, IChunkMetadata {
+public class ChunkMetadata implements IChunkMetadata {
 
   private String measurementUid;
 
@@ -75,6 +73,8 @@ public class ChunkMetadata implements Accountable, IChunkMetadata {
   private boolean isSeq = true;
   private boolean isClosed;
   private String filePath;
+
+  // 0x80 for time chunk, 0x40 for value chunk, 0x00 for common chunk
   private byte mask;
 
   // used for ChunkCache, Eg:"root.sg1/0/0"
@@ -101,6 +101,24 @@ public class ChunkMetadata implements Accountable, IChunkMetadata {
     this.tsDataType = tsDataType;
     this.offsetOfChunkHeader = fileOffset;
     this.statistics = statistics;
+  }
+
+  // won't clone deleteIntervalList & modified
+  public ChunkMetadata(ChunkMetadata other) {
+    this.measurementUid = other.measurementUid;
+    this.offsetOfChunkHeader = other.offsetOfChunkHeader;
+    this.tsDataType = other.tsDataType;
+    this.version = other.version;
+    this.chunkLoader = other.chunkLoader;
+    this.statistics = other.statistics;
+    this.isFromOldTsFile = other.isFromOldTsFile;
+    this.ramSize = other.ramSize;
+    this.isSeq = other.isSeq;
+    this.isClosed = other.isClosed;
+    this.filePath = other.filePath;
+    this.mask = other.mask;
+    this.tsFilePrefixPath = other.tsFilePrefixPath;
+    this.compactionVersion = other.compactionVersion;
   }
 
   @Override
@@ -186,6 +204,14 @@ public class ChunkMetadata implements Accountable, IChunkMetadata {
     return chunkMetaData;
   }
 
+  public static ChunkMetadata deserializeFrom(ByteBuffer buffer, TSDataType dataType) {
+    ChunkMetadata chunkMetadata = new ChunkMetadata();
+    chunkMetadata.tsDataType = dataType;
+    chunkMetadata.offsetOfChunkHeader = ReadWriteIOUtils.readLong(buffer);
+    chunkMetadata.statistics = Statistics.deserialize(buffer, dataType);
+    return chunkMetadata;
+  }
+
   @Override
   public long getVersion() {
     return version;
@@ -200,20 +226,26 @@ public class ChunkMetadata implements Accountable, IChunkMetadata {
     return deleteIntervalList;
   }
 
-  public void setDeleteIntervalList(List<TimeRange> list) {
-    this.deleteIntervalList = list;
-  }
-
-  public void insertIntoSortedDeletions(long startTime, long endTime) {
+  @Override
+  public void insertIntoSortedDeletions(TimeRange timeRange) {
     List<TimeRange> resultInterval = new ArrayList<>();
+    long startTime = timeRange.getMin();
+    long endTime = timeRange.getMax();
     if (deleteIntervalList != null) {
-      for (TimeRange interval : deleteIntervalList) {
+      if (deleteIntervalList.get(deleteIntervalList.size() - 1).getMax() < timeRange.getMin()) {
+        deleteIntervalList.add(timeRange);
+        return;
+      }
+      for (int i = 0; i < deleteIntervalList.size(); i++) {
+        TimeRange interval = deleteIntervalList.get(i);
         if (interval.getMax() < startTime) {
           resultInterval.add(interval);
         } else if (interval.getMin() > endTime) {
+          // remaining TimeRanges are in order, add all and return
           resultInterval.add(new TimeRange(startTime, endTime));
-          startTime = interval.getMin();
-          endTime = interval.getMax();
+          resultInterval.addAll(deleteIntervalList.subList(i, deleteIntervalList.size()));
+          deleteIntervalList = resultInterval;
+          return;
         } else if (interval.getMax() >= startTime || interval.getMin() <= endTime) {
           startTime = Math.min(interval.getMin(), startTime);
           endTime = Math.max(interval.getMax(), endTime);
@@ -277,27 +309,17 @@ public class ChunkMetadata implements Accountable, IChunkMetadata {
   }
 
   public long calculateRamSize() {
-    return CHUNK_METADATA_FIXED_RAM_SIZE
-        + RamUsageEstimator.sizeOf(tsFilePrefixPath)
-        + RamUsageEstimator.sizeOf(measurementUid)
-        + statistics.calculateRamSize();
+    long memSize = CHUNK_METADATA_FIXED_RAM_SIZE;
+    memSize += RamUsageEstimator.sizeOf(tsFilePrefixPath);
+    memSize += RamUsageEstimator.sizeOf(measurementUid);
+    memSize += statistics.calculateRamSize();
+    return memSize;
   }
 
   public static long calculateRamSize(String measurementId, TSDataType dataType) {
     return CHUNK_METADATA_FIXED_RAM_SIZE
         + RamUsageEstimator.sizeOf(measurementId)
         + Statistics.getSizeByType(dataType);
-  }
-
-  @Override
-  public void setRamSize(long size) {
-    this.ramSize = size;
-  }
-
-  /** must use calculate ram size first */
-  @Override
-  public long getRamSize() {
-    return ramSize;
   }
 
   public void mergeChunkMetadata(ChunkMetadata chunkMetadata) {
@@ -342,16 +364,6 @@ public class ChunkMetadata implements Accountable, IChunkMetadata {
   @Override
   public byte getMask() {
     return mask;
-  }
-
-  @Override
-  public boolean isTimeColumn() {
-    return mask == TsFileConstant.TIME_COLUMN_MASK;
-  }
-
-  @Override
-  public boolean isValueColumn() {
-    return mask == TsFileConstant.VALUE_COLUMN_MASK;
   }
 
   public void setMask(byte mask) {

@@ -19,8 +19,6 @@
 
 package org.apache.iotdb.tsfile.file.metadata;
 
-import org.apache.iotdb.tsfile.common.cache.Accountable;
-import org.apache.iotdb.tsfile.common.constant.TsFileConstant;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.statistics.Statistics;
 import org.apache.iotdb.tsfile.read.controller.IChunkMetadataLoader;
@@ -34,8 +32,10 @@ import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
-public class TimeseriesMetadata implements Accountable, ITimeSeriesMetadata {
+public class TimeseriesMetadata implements ITimeSeriesMetadata {
 
   /** used for old version tsfile */
   private long startOffsetOfChunkMetaDataList;
@@ -62,7 +62,7 @@ public class TimeseriesMetadata implements Accountable, ITimeSeriesMetadata {
   // modified is true when there are modifications of the series, or from unseq file
   private boolean modified;
 
-  protected IChunkMetadataLoader chunkMetadataLoader;
+  private IChunkMetadataLoader chunkMetadataLoader;
 
   private long ramSize;
 
@@ -125,6 +125,41 @@ public class TimeseriesMetadata implements Accountable, ITimeSeriesMetadata {
   }
 
   /**
+   * Return timeseries metadata without deserializing chunk metadatas if excludedMeasurements
+   * contains the measurementId of this timeseries metadata or needChunkMetadata is false.
+   */
+  public static TimeseriesMetadata deserializeFrom(
+      ByteBuffer buffer, Set<String> excludedMeasurements, boolean needChunkMetadata) {
+    byte timeseriesType = ReadWriteIOUtils.readByte(buffer);
+    String measurementID = ReadWriteIOUtils.readVarIntString(buffer);
+    TSDataType tsDataType = ReadWriteIOUtils.readDataType(buffer);
+    int chunkMetaDataListDataSize = ReadWriteForEncodingUtils.readUnsignedVarInt(buffer);
+    Statistics<? extends Serializable> statistics = Statistics.deserialize(buffer, tsDataType);
+
+    TimeseriesMetadata timeseriesMetaData = new TimeseriesMetadata();
+    timeseriesMetaData.setMeasurementId(measurementID);
+    timeseriesMetaData.setTimeSeriesMetadataType(timeseriesType);
+    timeseriesMetaData.setTSDataType(tsDataType);
+    timeseriesMetaData.setDataSizeOfChunkMetaDataList(chunkMetaDataListDataSize);
+    timeseriesMetaData.setStatistics(statistics);
+
+    if (!excludedMeasurements.contains(measurementID) && needChunkMetadata) {
+      // measurement is not in the excluded set and need chunk metadata
+      ByteBuffer byteBuffer = buffer.slice();
+      byteBuffer.limit(chunkMetaDataListDataSize);
+      timeseriesMetaData.chunkMetadataList = new ArrayList<>();
+      while (byteBuffer.hasRemaining()) {
+        timeseriesMetaData.chunkMetadataList.add(
+            ChunkMetadata.deserializeFrom(byteBuffer, timeseriesMetaData));
+      }
+      // minimize the storage of an ArrayList instance.
+      timeseriesMetaData.chunkMetadataList.trimToSize();
+    }
+    buffer.position(buffer.position() + chunkMetaDataListDataSize);
+    return timeseriesMetaData;
+  }
+
+  /**
    * serialize to outputStream.
    *
    * @param outputStream outputStream
@@ -146,14 +181,6 @@ public class TimeseriesMetadata implements Accountable, ITimeSeriesMetadata {
 
   public byte getTimeSeriesMetadataType() {
     return timeSeriesMetadataType;
-  }
-
-  public boolean isTimeColumn() {
-    return timeSeriesMetadataType == TsFileConstant.TIME_COLUMN_MASK;
-  }
-
-  public boolean isValueColumn() {
-    return timeSeriesMetadataType == TsFileConstant.VALUE_COLUMN_MASK;
   }
 
   public void setTimeSeriesMetadataType(byte timeSeriesMetadataType) {
@@ -218,6 +245,12 @@ public class TimeseriesMetadata implements Accountable, ITimeSeriesMetadata {
     return chunkMetadataList;
   }
 
+  public List<IChunkMetadata> getCopiedChunkMetadataList() {
+    return chunkMetadataList.stream()
+        .map(chunkMetadata -> new ChunkMetadata((ChunkMetadata) chunkMetadata))
+        .collect(Collectors.toList());
+  }
+
   @Override
   public boolean isModified() {
     return modified;
@@ -226,16 +259,6 @@ public class TimeseriesMetadata implements Accountable, ITimeSeriesMetadata {
   @Override
   public void setModified(boolean modified) {
     this.modified = modified;
-  }
-
-  @Override
-  public void setRamSize(long size) {
-    this.ramSize = size;
-  }
-
-  @Override
-  public long getRamSize() {
-    return ramSize;
   }
 
   @Override

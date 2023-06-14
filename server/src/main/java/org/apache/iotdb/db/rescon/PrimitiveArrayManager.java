@@ -20,6 +20,7 @@ package org.apache.iotdb.db.rescon;
 
 import org.apache.iotdb.db.conf.IoTDBConfig;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
+import org.apache.iotdb.db.utils.datastructure.TVListSortAlgorithm;
 import org.apache.iotdb.tsfile.exception.write.UnSupportedDataTypeException;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.utils.Binary;
@@ -40,6 +41,8 @@ public class PrimitiveArrayManager {
 
   public static final int ARRAY_SIZE = CONFIG.getPrimitiveArraySize();
 
+  public static final TVListSortAlgorithm TVLIST_SORT_ALGORITHM = CONFIG.getTvListSortAlgorithm();
+
   /**
    * The actual used memory will be 50% larger than the statistic, so we need to limit the size of
    * POOLED_ARRAYS_MEMORY_THRESHOLD, make it smaller than its actual allowed value.
@@ -48,15 +51,15 @@ public class PrimitiveArrayManager {
 
   /** threshold total size of arrays for all data types */
   private static final double POOLED_ARRAYS_MEMORY_THRESHOLD =
-      CONFIG.getAllocateMemoryForWrite()
+      CONFIG.getAllocateMemoryForStorageEngine()
           * CONFIG.getBufferedArraysMemoryProportion()
           / AMPLIFICATION_FACTOR;
 
-  /** TSDataType#serialize() -> ArrayDeque<Array>, VECTOR is ignored */
-  private static final ArrayDeque[] POOLED_ARRAYS = new ArrayDeque[TSDataType.values().length - 1];
+  /** TSDataType#serialize() -> ArrayDeque<Array>, VECTOR and UNKNOWN are ignored */
+  private static final ArrayDeque[] POOLED_ARRAYS = new ArrayDeque[TSDataType.values().length - 2];
 
-  /** TSDataType#serialize() -> max size of ArrayDeque<Array>, VECTOR is ignored */
-  private static final int[] LIMITS = new int[TSDataType.values().length - 1];
+  /** TSDataType#serialize() -> max size of ArrayDeque<Array>, VECTOR and UNKNOWN are ignored */
+  private static final int[] LIMITS = new int[TSDataType.values().length - 2];
 
   /** LIMITS should be updated if (TOTAL_ALLOCATION_REQUEST_COUNT.get() > limitUpdateThreshold) */
   private static long limitUpdateThreshold;
@@ -86,8 +89,8 @@ public class PrimitiveArrayManager {
     // => LIMITS[i] = POOLED_ARRAYS_MEMORY_THRESHOLD / ARRAY_SIZE / ∑(datatype[i].getDataTypeSize())
     int totalDataTypeSize = 0;
     for (TSDataType dataType : TSDataType.values()) {
-      // VECTOR is ignored
-      if (dataType.equals(TSDataType.VECTOR)) {
+      // VECTOR and UNKNOWN are ignored
+      if (dataType.equals(TSDataType.VECTOR) || dataType.equals(TSDataType.UNKNOWN)) {
         continue;
       }
       totalDataTypeSize += dataType.getDataTypeSize();
@@ -97,7 +100,7 @@ public class PrimitiveArrayManager {
     Arrays.fill(LIMITS, (int) limit);
 
     // limitUpdateThreshold = ∑(LIMITS[i])
-    limitUpdateThreshold = (long) ((TSDataType.values().length - 1) * limit);
+    limitUpdateThreshold = (long) ((TSDataType.values().length - 2) * limit);
 
     for (int i = 0; i < POOLED_ARRAYS.length; ++i) {
       POOLED_ARRAYS[i] = new ArrayDeque<>((int) limit);
@@ -118,8 +121,8 @@ public class PrimitiveArrayManager {
    * @return an array
    */
   public static Object allocate(TSDataType dataType) {
-    if (dataType.equals(TSDataType.VECTOR)) {
-      throw new UnSupportedDataTypeException(TSDataType.VECTOR.name());
+    if (dataType.equals(TSDataType.VECTOR) || dataType.equals(TSDataType.UNKNOWN)) {
+      throw new UnSupportedDataTypeException(dataType.name());
     }
 
     if (TOTAL_ALLOCATION_REQUEST_COUNT.get() > limitUpdateThreshold) {
@@ -164,8 +167,8 @@ public class PrimitiveArrayManager {
     //     / ∑(datatype[i].getDataTypeSize() * ratios[i])
     double weightedSumOfRatios = 0;
     for (TSDataType dataType : TSDataType.values()) {
-      // VECTOR is ignored
-      if (dataType.equals(TSDataType.VECTOR)) {
+      // VECTOR and UNKNOWN are ignored
+      if (dataType.equals(TSDataType.VECTOR) || dataType.equals(TSDataType.UNKNOWN)) {
         continue;
       }
       weightedSumOfRatios += dataType.getDataTypeSize() * ratios[dataType.serialize()];
@@ -179,8 +182,8 @@ public class PrimitiveArrayManager {
       int newLimit = (int) (limitBase * ratios[i]);
       LIMITS[i] = newLimit;
 
-      if (LOGGER.isInfoEnabled() && oldLimit != newLimit) {
-        LOGGER.info(
+      if (LOGGER.isDebugEnabled() && oldLimit != newLimit) {
+        LOGGER.debug(
             "limit of {} array deque size updated: {} -> {}",
             TSDataType.deserialize((byte) i).name(),
             oldLimit,
@@ -194,10 +197,12 @@ public class PrimitiveArrayManager {
     for (int limit : LIMITS) {
       limitUpdateThreshold += limit;
     }
-    LOGGER.info(
-        "limitUpdateThreshold of PrimitiveArrayManager updated: {} -> {}",
-        oldLimitUpdateThreshold,
-        limitUpdateThreshold);
+    if (LOGGER.isDebugEnabled() && oldLimitUpdateThreshold != limitUpdateThreshold) {
+      LOGGER.debug(
+          "limitUpdateThreshold of PrimitiveArrayManager updated: {} -> {}",
+          oldLimitUpdateThreshold,
+          limitUpdateThreshold);
+    }
 
     for (AtomicLong allocationRequestCount : ALLOCATION_REQUEST_COUNTS) {
       allocationRequestCount.set(0);
@@ -278,7 +283,7 @@ public class PrimitiveArrayManager {
    * @return an array of primitive data arrays
    */
   public static Object createDataListsByType(TSDataType dataType, int size) {
-    int arrayNumber = (int) Math.ceil((float) size / (float) ARRAY_SIZE);
+    int arrayNumber = getArrayRowCount(size);
     switch (dataType) {
       case BOOLEAN:
         boolean[][] booleans = new boolean[arrayNumber][];
@@ -319,5 +324,9 @@ public class PrimitiveArrayManager {
       default:
         throw new UnSupportedDataTypeException(dataType.name());
     }
+  }
+
+  public static int getArrayRowCount(int size) {
+    return size / ARRAY_SIZE + (size % ARRAY_SIZE == 0 ? 0 : 1);
   }
 }

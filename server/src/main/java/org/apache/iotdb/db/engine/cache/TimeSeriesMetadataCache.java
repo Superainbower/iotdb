@@ -19,15 +19,16 @@
 
 package org.apache.iotdb.db.engine.cache;
 
+import org.apache.iotdb.commons.conf.IoTDBConstant;
+import org.apache.iotdb.commons.service.metric.MetricService;
+import org.apache.iotdb.commons.utils.TestOnly;
 import org.apache.iotdb.db.conf.IoTDBConfig;
-import org.apache.iotdb.db.conf.IoTDBConstant;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
+import org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet;
+import org.apache.iotdb.db.mpp.metric.TimeSeriesMetadataCacheMetrics;
 import org.apache.iotdb.db.query.control.FileReaderManager;
-import org.apache.iotdb.db.utils.TestOnly;
-import org.apache.iotdb.tsfile.common.constant.TsFileConstant;
 import org.apache.iotdb.tsfile.file.metadata.ChunkMetadata;
 import org.apache.iotdb.tsfile.file.metadata.TimeseriesMetadata;
-import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.read.TsFileSequenceReader;
 import org.apache.iotdb.tsfile.read.common.Path;
 import org.apache.iotdb.tsfile.utils.BloomFilter;
@@ -43,17 +44,16 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.lang.ref.WeakReference;
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.TreeSet;
 import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+
+import static org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet.READ_TIMESERIES_METADATA_CACHE;
+import static org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet.READ_TIMESERIES_METADATA_FILE;
 
 /**
  * This class is used to cache <code>TimeSeriesMetadata</code> in IoTDB. The caching strategy is
@@ -68,6 +68,9 @@ public class TimeSeriesMetadataCache {
       config.getAllocateMemoryForTimeSeriesMetaDataCache();
   private static final boolean CACHE_ENABLE = config.isMetaDataCacheEnable();
 
+  private static final SeriesScanCostMetricSet SERIES_SCAN_COST_METRIC_SET =
+      SeriesScanCostMetricSet.getInstance();
+
   private final Cache<TimeSeriesMetadataCacheKey, TimeseriesMetadata> lruCache;
 
   private final AtomicLong entryAverageSize = new AtomicLong(0);
@@ -79,7 +82,7 @@ public class TimeSeriesMetadataCache {
   private TimeSeriesMetadataCache() {
     if (CACHE_ENABLE) {
       logger.info(
-          "TimeseriesMetadataCache size = " + MEMORY_THRESHOLD_IN_TIME_SERIES_METADATA_CACHE);
+          "TimeseriesMetadataCache size = {}", MEMORY_THRESHOLD_IN_TIME_SERIES_METADATA_CACHE);
     }
     lruCache =
         Caffeine.newBuilder()
@@ -96,275 +99,118 @@ public class TimeSeriesMetadataCache {
                                 + RamUsageEstimator.shallowSizeOf(value)
                                 + RamUsageEstimator.sizeOf(value.getMeasurementId())
                                 + RamUsageEstimator.shallowSizeOf(value.getStatistics())
-                                + (((ChunkMetadata) value.getChunkMetadataList().get(0))
-                                            .calculateRamSize()
-                                        + RamUsageEstimator.NUM_BYTES_OBJECT_REF)
+                                + (value.getChunkMetadataList().get(0) == null
+                                        ? 0
+                                        : ((ChunkMetadata) value.getChunkMetadataList().get(0))
+                                                .calculateRamSize()
+                                            + RamUsageEstimator.NUM_BYTES_OBJECT_REF)
                                     * value.getChunkMetadataList().size()
                                 + RamUsageEstimator.shallowSizeOf(value.getChunkMetadataList())))
             .recordStats()
             .build();
+    // add metrics
+    MetricService.getInstance().addMetricSet(new TimeSeriesMetadataCacheMetrics(this));
   }
 
   public static TimeSeriesMetadataCache getInstance() {
     return TimeSeriesMetadataCache.TimeSeriesMetadataCacheHolder.INSTANCE;
   }
 
-  public TimeseriesMetadata get(TimeSeriesMetadataCacheKey key, Set<String> allSensors)
-      throws IOException {
-    return get(key, allSensors, false);
-  }
-
   @SuppressWarnings("squid:S1860") // Suppress synchronize warning
   public TimeseriesMetadata get(
-      TimeSeriesMetadataCacheKey key, Set<String> allSensors, boolean debug) throws IOException {
-    if (!CACHE_ENABLE) {
-      // bloom filter part
-      TsFileSequenceReader reader = FileReaderManager.getInstance().get(key.filePath, true);
-      BloomFilter bloomFilter = reader.readBloomFilter();
-      if (bloomFilter != null
-          && !bloomFilter.contains(key.device + IoTDBConstant.PATH_SEPARATOR + key.measurement)) {
-        return null;
-      }
-      return reader.readTimeseriesMetadata(new Path(key.device, key.measurement), false);
-    }
-
-    TimeseriesMetadata timeseriesMetadata = lruCache.getIfPresent(key);
-
-    if (timeseriesMetadata == null) {
-      if (debug) {
-        DEBUG_LOGGER.info(
-            "Cache miss: {}.{} in file: {}", key.device, key.measurement, key.filePath);
-        DEBUG_LOGGER.info("Device: {}, all sensors: {}", key.device, allSensors);
-      }
-      // allow for the parallelism of different devices
-      synchronized (
-          devices.computeIfAbsent(key.device + SEPARATOR + key.filePath, WeakReference::new)) {
-        // double check
-        timeseriesMetadata = lruCache.getIfPresent(key);
-        if (timeseriesMetadata == null) {
-          Path path = new Path(key.device, key.measurement);
-          // bloom filter part
-          TsFileSequenceReader reader = FileReaderManager.getInstance().get(key.filePath, true);
-          BloomFilter bloomFilter =
-              BloomFilterCache.getInstance()
-                  .get(new BloomFilterCache.BloomFilterCacheKey(key.filePath), debug);
-          if (bloomFilter != null && !bloomFilter.contains(path.getFullPath())) {
-            if (debug) {
-              DEBUG_LOGGER.info("TimeSeries meta data {} is filter by bloomFilter!", key);
-            }
-            return null;
-          }
-          List<TimeseriesMetadata> timeSeriesMetadataList =
-              reader.readTimeseriesMetadata(path, allSensors);
-          // put TimeSeriesMetadata of all sensors used in this query into cache
-          for (TimeseriesMetadata metadata : timeSeriesMetadataList) {
-            TimeSeriesMetadataCacheKey k =
-                new TimeSeriesMetadataCacheKey(
-                    key.filePath, key.device, metadata.getMeasurementId());
-            lruCache.put(k, metadata);
-            if (metadata.getMeasurementId().equals(key.measurement)) {
-              timeseriesMetadata = metadata;
-            }
-          }
-        }
-      }
-    }
-    if (timeseriesMetadata == null) {
-      if (debug) {
-        DEBUG_LOGGER.info("The file doesn't have this time series {}.", key);
-      }
-      return null;
-    } else {
-      if (debug) {
-        DEBUG_LOGGER.info(
-            "Get timeseries: {}.{}  metadata in file: {}  from cache: {}.",
-            key.device,
-            key.measurement,
-            key.filePath,
-            timeseriesMetadata);
-      }
-      return new TimeseriesMetadata(timeseriesMetadata);
-    }
-  }
-
-  /**
-   * Support for vector. allSensors > subSensors
-   *
-   * @param key vector's own fullPath, e.g. root.sg1.d1.vector
-   * @param subSensorList all subSensors of this vector in query, e.g. [vector.s1, vector.s2,
-   *     vector.s3]
-   * @param allSensors all sensors belonging to this device that appear in query. For vector, this
-   *     should contain both vector name and subSensors' name, e.g. [vector, vector.s1, vector.s2,
-   *     vector.s3]
-   */
-  // Suppress synchronize warning
-  // Suppress high Cognitive Complexity warning
-  @SuppressWarnings({"squid:S1860", "squid:S3776"})
-  public List<TimeseriesMetadata> get(
       TimeSeriesMetadataCacheKey key,
-      List<String> subSensorList,
       Set<String> allSensors,
+      boolean ignoreNotExists,
       boolean debug)
       throws IOException {
-    // put all sub sensors into allSensors
-    for (int i = 0; i < subSensorList.size(); i++) {
-      subSensorList.set(i, key.measurement + TsFileConstant.PATH_SEPARATOR + subSensorList.get(i));
-    }
-    allSensors.addAll(subSensorList);
-    if (!CACHE_ENABLE) {
-      // bloom filter part
-      TsFileSequenceReader reader = FileReaderManager.getInstance().get(key.filePath, true);
-      BloomFilter bloomFilter = reader.readBloomFilter();
-      if (bloomFilter != null
-          && !bloomFilter.contains(key.device + IoTDBConstant.PATH_SEPARATOR + key.measurement)) {
-        return Collections.emptyList();
-      }
-      // for the condition that cache is disabled, we only get what we need
-      Set<String> allSensorSet = new HashSet<>(subSensorList);
-      allSensorSet.add(key.measurement);
-      return readTimeseriesMetadataForVector(reader, key, subSensorList, allSensorSet);
-    }
+    long startTime = System.nanoTime();
+    boolean cacheHit = true;
+    try {
+      if (!CACHE_ENABLE) {
+        cacheHit = false;
 
-    List<TimeseriesMetadata> res = new ArrayList<>();
-    getVectorTimeSeriesMetadataListFromCache(key, subSensorList, res);
-
-    if (res.isEmpty()) {
-      if (debug) {
-        DEBUG_LOGGER.info(
-            "Cache miss: {}.{} in file: {}", key.device, key.measurement, key.filePath);
-        DEBUG_LOGGER.info("Device: {}, all sensors: {}", key.device, allSensors);
+        // bloom filter part
+        TsFileSequenceReader reader = FileReaderManager.getInstance().get(key.filePath, true);
+        BloomFilter bloomFilter = reader.readBloomFilter();
+        if (bloomFilter != null
+            && !bloomFilter.contains(key.device + IoTDBConstant.PATH_SEPARATOR + key.measurement)) {
+          return null;
+        }
+        TimeseriesMetadata timeseriesMetadata =
+            reader.readTimeseriesMetadata(
+                new Path(key.device, key.measurement, true), ignoreNotExists);
+        return (timeseriesMetadata == null || timeseriesMetadata.getStatistics().getCount() == 0)
+            ? null
+            : timeseriesMetadata;
       }
-      // allow for the parallelism of different devices
-      synchronized (
-          devices.computeIfAbsent(key.device + SEPARATOR + key.filePath, WeakReference::new)) {
-        // double check
-        getVectorTimeSeriesMetadataListFromCache(key, subSensorList, res);
-        if (res.isEmpty()) {
-          Path path = new Path(key.device, key.measurement);
-          // bloom filter part
-          TsFileSequenceReader reader = FileReaderManager.getInstance().get(key.filePath, true);
-          BloomFilter bloomFilter =
-              BloomFilterCache.getInstance()
-                  .get(new BloomFilterCache.BloomFilterCacheKey(key.filePath), debug);
-          if (bloomFilter != null && !bloomFilter.contains(path.getFullPath())) {
-            if (debug) {
-              DEBUG_LOGGER.info("TimeSeries meta data {} is filter by bloomFilter!", key);
+
+      TimeseriesMetadata timeseriesMetadata = lruCache.getIfPresent(key);
+
+      if (timeseriesMetadata == null) {
+        if (debug) {
+          DEBUG_LOGGER.info(
+              "Cache miss: {}.{} in file: {}", key.device, key.measurement, key.filePath);
+          DEBUG_LOGGER.info("Device: {}, all sensors: {}", key.device, allSensors);
+        }
+        // allow for the parallelism of different devices
+        synchronized (
+            devices.computeIfAbsent(key.device + SEPARATOR + key.filePath, WeakReference::new)) {
+          // double check
+          timeseriesMetadata = lruCache.getIfPresent(key);
+          if (timeseriesMetadata == null) {
+            cacheHit = false;
+
+            Path path = new Path(key.device, key.measurement, true);
+            // bloom filter part
+            BloomFilter bloomFilter =
+                BloomFilterCache.getInstance()
+                    .get(new BloomFilterCache.BloomFilterCacheKey(key.filePath), debug);
+            if (bloomFilter != null) {
+              if (!bloomFilter.contains(path.getFullPath())) {
+                if (debug) {
+                  DEBUG_LOGGER.info("TimeSeries meta data {} is filter by bloomFilter!", key);
+                }
+                return null;
+              }
             }
-            allSensors.removeAll(subSensorList);
-            return Collections.emptyList();
-          }
-          res = readTimeseriesMetadataForVector(reader, key, subSensorList, allSensors);
-          Iterator<TimeseriesMetadata> iterator = res.iterator();
-          Set<String> subSensorSet = new HashSet<>(subSensorList);
-          subSensorSet.add(key.measurement);
-          // Note: allSensors > subSensors
-          // Put TimeSeriesMetadata of all sensors used in this query into cache
-          // Remove redundant TimeSeriesMetadata that do not belong to subSensors
-          while (iterator.hasNext()) {
-            TimeseriesMetadata metadata = iterator.next();
-            TimeSeriesMetadataCacheKey k =
-                new TimeSeriesMetadataCacheKey(
-                    key.filePath, key.device, metadata.getMeasurementId());
-            lruCache.put(k, metadata);
-            if (!subSensorSet.contains(metadata.getMeasurementId())) {
-              iterator.remove();
+            TsFileSequenceReader reader = FileReaderManager.getInstance().get(key.filePath, true);
+            List<TimeseriesMetadata> timeSeriesMetadataList =
+                reader.readTimeseriesMetadata(path, allSensors);
+            // put TimeSeriesMetadata of all sensors used in this query into cache
+            for (TimeseriesMetadata metadata : timeSeriesMetadataList) {
+              TimeSeriesMetadataCacheKey k =
+                  new TimeSeriesMetadataCacheKey(
+                      key.filePath, key.device, metadata.getMeasurementId());
+              if (metadata.getStatistics().getCount() != 0) {
+                lruCache.put(k, metadata);
+              }
+              if (metadata.getMeasurementId().equals(key.measurement)) {
+                timeseriesMetadata = metadata.getStatistics().getCount() == 0 ? null : metadata;
+              }
             }
           }
         }
       }
-    }
-    if (debug) {
-      if (res.isEmpty()) {
-        DEBUG_LOGGER.info("The file doesn't have this time series {}.", key);
+      if (timeseriesMetadata == null) {
+        if (debug) {
+          DEBUG_LOGGER.info("The file doesn't have this time series {}.", key);
+        }
+        return null;
       } else {
-        DEBUG_LOGGER.info(
-            "Get timeseries: {}.{}  metadata in file: {}  from cache: {}.",
-            key.device,
-            key.measurement,
-            key.filePath,
-            res);
-      }
-    }
-
-    allSensors.removeAll(subSensorList);
-    return res;
-  }
-
-  /**
-   * Support for vector, extraction of common function of `get`
-   *
-   * @param key vector's own fullPath, e.g. root.sg1.d1.vector
-   * @param subSensorList all subSensors of this vector in one query, e.g. [vector.s1, vector.s2,
-   *     vector.s3]
-   * @param allSensors all sensors of the device in one device, to vector, this should contain both
-   *     vector name and subSensors' name, e.g. [vector, vector.s1, vector.s2, vector.s3]
-   * @param reader TsFileSequenceReader created by file
-   */
-  private List<TimeseriesMetadata> readTimeseriesMetadataForVector(
-      TsFileSequenceReader reader,
-      TimeSeriesMetadataCacheKey key,
-      List<String> subSensorList,
-      Set<String> allSensors)
-      throws IOException {
-    Path path = new Path(key.device, key.measurement);
-    List<TimeseriesMetadata> timeSeriesMetadataList =
-        reader.readTimeseriesMetadata(path, allSensors);
-    // for new implementation of index tree, subSensor may not all stored in one leaf
-    // for this case, it's necessary to make sure all subSensor's timeseries add to list
-    TreeSet<String> subSensorsSet = new TreeSet<>(subSensorList);
-    for (int i = 0; i < timeSeriesMetadataList.size(); i++) {
-      TimeseriesMetadata tsMetadata = timeSeriesMetadataList.get(i);
-      if (tsMetadata.getTSDataType().equals(TSDataType.VECTOR)
-          && tsMetadata.getMeasurementId().equals(key.measurement)) {
-        for (int j = i + 1; j < timeSeriesMetadataList.size(); j++) {
-          tsMetadata = timeSeriesMetadataList.get(j);
-          if (!subSensorsSet.isEmpty() && subSensorsSet.contains(tsMetadata.getMeasurementId())) {
-            subSensorsSet.remove(tsMetadata.getMeasurementId());
-          }
+        if (debug) {
+          DEBUG_LOGGER.info(
+              "Get timeseries: {}.{}  metadata in file: {}  from cache: {}.",
+              key.device,
+              key.measurement,
+              key.filePath,
+              timeseriesMetadata);
         }
-        break;
+        return new TimeseriesMetadata(timeseriesMetadata);
       }
-    }
-    while (!subSensorsSet.isEmpty()) {
-      Path subPath = new Path(key.device, subSensorsSet.first());
-      List<TimeseriesMetadata> subTsMetaDataList =
-          reader.readTimeseriesMetadata(subPath, allSensors);
-      for (TimeseriesMetadata tsMetadata : subTsMetaDataList) {
-        if (!subSensorsSet.isEmpty() && subSensorsSet.contains(tsMetadata.getMeasurementId())) {
-          subSensorsSet.remove(tsMetadata.getMeasurementId());
-        }
-      }
-      timeSeriesMetadataList.addAll(subTsMetaDataList);
-    }
-    return timeSeriesMetadataList;
-  }
-
-  /**
-   * !!!Attention!!!
-   *
-   * <p>For a vector, e.g. root.sg1.d1.vector1(s1, s2) TimeSeriesMetadataCacheKey for vector1 should
-   * be {filePath: ""./data/data/seq/......., device: root.sg1.d1, measurement: vector1}, vector1
-   * will be in both device and measurement TimeSeriesMetadataCacheKey for vector1.s1 should be
-   * {filePath: ""./data/data/seq/......., device: root.sg1.d1, measurement: vector.s1}
-   * TimeSeriesMetadataCacheKey for vector1.s2 should be {filePath: ""./data/data/seq/.......,
-   * device: root.sg1.d1, measurement: vector.s2}
-   */
-  private void getVectorTimeSeriesMetadataListFromCache(
-      TimeSeriesMetadataCacheKey key, List<String> subSensorList, List<TimeseriesMetadata> res) {
-    TimeseriesMetadata timeseriesMetadata = lruCache.getIfPresent(key);
-    if (timeseriesMetadata != null) {
-      res.add(timeseriesMetadata);
-      for (String subSensor : subSensorList) {
-        timeseriesMetadata =
-            lruCache.getIfPresent(
-                new TimeSeriesMetadataCacheKey(key.filePath, key.device, subSensor));
-        if (timeseriesMetadata != null) {
-          res.add(timeseriesMetadata);
-        } else {
-          res.clear();
-          break;
-        }
-      }
+    } finally {
+      SERIES_SCAN_COST_METRIC_SET.recordSeriesScanCost(
+          cacheHit ? READ_TIMESERIES_METADATA_CACHE : READ_TIMESERIES_METADATA_FILE,
+          System.nanoTime() - startTime);
     }
   }
 
@@ -386,6 +232,10 @@ public class TimeSeriesMetadataCache {
 
   public long getAverageSize() {
     return entryAverageSize.get();
+  }
+
+  public double calculateBloomFilterHitRatio() {
+    return BloomFilterCache.getInstance().calculateBloomFilterHitRatio();
   }
 
   /** clear LRUCache. */

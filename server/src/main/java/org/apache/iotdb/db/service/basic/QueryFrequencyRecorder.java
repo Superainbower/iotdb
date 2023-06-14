@@ -18,7 +18,9 @@
  */
 package org.apache.iotdb.db.service.basic;
 
-import org.apache.iotdb.db.concurrent.IoTDBThreadPoolFactory;
+import org.apache.iotdb.commons.concurrent.IoTDBThreadPoolFactory;
+import org.apache.iotdb.commons.concurrent.ThreadName;
+import org.apache.iotdb.commons.concurrent.threadpool.ScheduledExecutorUtil;
 import org.apache.iotdb.db.conf.IoTDBConfig;
 
 import org.slf4j.Logger;
@@ -35,8 +37,10 @@ public class QueryFrequencyRecorder {
 
   public QueryFrequencyRecorder(IoTDBConfig config) {
     ScheduledExecutorService timedQuerySqlCountThread =
-        IoTDBThreadPoolFactory.newSingleThreadScheduledExecutor("timedQuerySqlCount");
-    timedQuerySqlCountThread.scheduleAtFixedRate(
+        IoTDBThreadPoolFactory.newSingleThreadScheduledExecutor(
+            ThreadName.TIMED_QUERY_SQL_COUNT.getName());
+    ScheduledExecutorUtil.safelyScheduleAtFixedRate(
+        timedQuerySqlCountThread,
         () -> {
           if (QUERY_COUNT.get() != 0) {
             QUERY_FREQUENCY_LOGGER.info(

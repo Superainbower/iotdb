@@ -32,11 +32,11 @@ public class BinaryTVListTest {
 
   @Test
   public void testBinaryTVList() {
-    BinaryTVList tvList = new BinaryTVList();
+    BinaryTVList tvList = BinaryTVList.newList();
     for (int i = 0; i < 1000; i++) {
       tvList.putBinary(i, Binary.valueOf(String.valueOf(i)));
     }
-    for (int i = 0; i < tvList.size; i++) {
+    for (int i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(String.valueOf(i), tvList.getBinary(i).toString());
       Assert.assertEquals(i, tvList.getTime(i));
     }
@@ -44,7 +44,7 @@ public class BinaryTVListTest {
 
   @Test
   public void testPutBinariesWithoutBitMap() {
-    BinaryTVList tvList = new BinaryTVList();
+    BinaryTVList tvList = BinaryTVList.newList();
     Binary[] binaryList = new Binary[1001];
     List<Long> timeList = new ArrayList<>();
     for (int i = 1000; i >= 0; i--) {
@@ -53,14 +53,14 @@ public class BinaryTVListTest {
     }
     tvList.putBinaries(
         ArrayUtils.toPrimitive(timeList.toArray(new Long[0])), binaryList, null, 0, 1000);
-    for (long i = 0; i < tvList.size; i++) {
-      Assert.assertEquals(tvList.size - i, tvList.getTime((int) i));
+    for (long i = 0; i < tvList.rowCount; i++) {
+      Assert.assertEquals(tvList.rowCount - i, tvList.getTime((int) i));
     }
   }
 
   @Test
   public void testPutBinariesWithBitMap() {
-    BinaryTVList tvList = new BinaryTVList();
+    BinaryTVList tvList = BinaryTVList.newList();
     Binary[] binaryList = new Binary[1001];
     List<Long> timeList = new ArrayList<>();
     BitMap bitMap = new BitMap(1001);
@@ -88,7 +88,7 @@ public class BinaryTVListTest {
 
   @Test
   public void testClone() {
-    BinaryTVList tvList = new BinaryTVList();
+    BinaryTVList tvList = BinaryTVList.newList();
     Binary[] binaryList = new Binary[1001];
     List<Long> timeList = new ArrayList<>();
     BitMap bitMap = new BitMap(1001);
@@ -103,9 +103,39 @@ public class BinaryTVListTest {
         ArrayUtils.toPrimitive(timeList.toArray(new Long[0])), binaryList, bitMap, 0, 1000);
     tvList.sort();
     BinaryTVList clonedTvList = tvList.clone();
-    for (long i = 0; i < tvList.size; i++) {
+    for (long i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(tvList.getBinary((int) i), clonedTvList.getBinary((int) i));
       Assert.assertEquals(tvList.getTime((int) i), clonedTvList.getTime((int) i));
     }
+    Assert.assertEquals(tvList.memoryBinaryChunkSize, clonedTvList.memoryBinaryChunkSize);
+  }
+
+  @Test
+  public void testCalculateChunkSize() {
+    BinaryTVList tvList = BinaryTVList.newList();
+    for (int i = 0; i < 10; i++) {
+      tvList.putBinary(i, Binary.valueOf(String.valueOf(i)));
+    }
+    Assert.assertEquals(tvList.memoryBinaryChunkSize, 360);
+
+    Binary[] binaryList = new Binary[10];
+    List<Long> timeList = new ArrayList<>();
+    BitMap bitMap = new BitMap(10);
+    for (int i = 0; i < 10; i++) {
+      timeList.add((long) i + 10);
+      binaryList[i] = Binary.valueOf(String.valueOf(i));
+      if (i % 2 == 0) {
+        bitMap.mark(i);
+      }
+    }
+    tvList.putBinaries(
+        ArrayUtils.toPrimitive(timeList.toArray(new Long[0])), binaryList, bitMap, 0, 10);
+    Assert.assertEquals(tvList.memoryBinaryChunkSize, 540);
+
+    tvList.delete(5, 15);
+    Assert.assertEquals(tvList.memoryBinaryChunkSize, 252);
+
+    tvList.clear();
+    Assert.assertEquals(tvList.memoryBinaryChunkSize, 0);
   }
 }

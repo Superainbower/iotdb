@@ -18,35 +18,48 @@
  */
 package org.apache.iotdb.db.engine.storagegroup;
 
+import org.apache.iotdb.commons.service.metric.MetricService;
+
 /** The TsFileProcessorInfo records the memory cost of this TsFileProcessor. */
 public class TsFileProcessorInfo {
 
   /** Once tspInfo updated, report to storageGroupInfo that this TSP belongs to. */
-  private StorageGroupInfo storageGroupInfo;
+  private final DataRegionInfo dataRegionInfo;
 
   /** memory occupation of unsealed TsFileResource, ChunkMetadata, WAL */
   private long memCost;
 
-  public TsFileProcessorInfo(StorageGroupInfo storageGroupInfo) {
-    this.storageGroupInfo = storageGroupInfo;
+  private final TsFileProcessorInfoMetrics metrics;
+
+  public TsFileProcessorInfo(DataRegionInfo dataRegionInfo) {
+    this.dataRegionInfo = dataRegionInfo;
     this.memCost = 0L;
+    this.metrics =
+        new TsFileProcessorInfoMetrics(dataRegionInfo.getDataRegion().getDatabaseName(), this);
+    MetricService.getInstance().addMetricSet(metrics);
   }
 
   /** called in each insert */
   public void addTSPMemCost(long cost) {
     memCost += cost;
-    storageGroupInfo.addStorageGroupMemCost(cost);
+    dataRegionInfo.addStorageGroupMemCost(cost);
   }
 
   /** called when meet exception */
   public void releaseTSPMemCost(long cost) {
-    storageGroupInfo.releaseStorageGroupMemCost(cost);
+    dataRegionInfo.releaseStorageGroupMemCost(cost);
     memCost -= cost;
   }
 
   /** called when closing TSP */
   public void clear() {
-    storageGroupInfo.releaseStorageGroupMemCost(memCost);
+    dataRegionInfo.releaseStorageGroupMemCost(memCost);
     memCost = 0L;
+    MetricService.getInstance().removeMetricSet(metrics);
+  }
+
+  /** get memCost */
+  public long getMemCost() {
+    return memCost;
   }
 }

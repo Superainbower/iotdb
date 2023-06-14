@@ -32,12 +32,12 @@ public class DoubleTVListTest {
 
   @Test
   public void testDoubleTVList1() {
-    DoubleTVList tvList = new DoubleTVList();
+    DoubleTVList tvList = DoubleTVList.newList();
     for (int i = 0; i < 1000; i++) {
       tvList.putDouble(i, i);
     }
     tvList.sort();
-    for (int i = 0; i < tvList.size; i++) {
+    for (int i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(i, tvList.getDouble(i), delta);
       Assert.assertEquals(i, tvList.getTime(i));
     }
@@ -45,12 +45,12 @@ public class DoubleTVListTest {
 
   @Test
   public void testDoubleTVList2() {
-    DoubleTVList tvList = new DoubleTVList();
+    DoubleTVList tvList = DoubleTVList.newList();
     for (int i = 1000; i >= 0; i--) {
       tvList.putDouble(i, i);
     }
     tvList.sort();
-    for (int i = 0; i < tvList.size; i++) {
+    for (int i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(i, tvList.getDouble(i), delta);
       Assert.assertEquals(i, tvList.getTime(i));
     }
@@ -58,7 +58,7 @@ public class DoubleTVListTest {
 
   @Test
   public void testPutDoublesWithoutBitMap() {
-    DoubleTVList tvList = new DoubleTVList();
+    DoubleTVList tvList = DoubleTVList.newList();
     List<Double> doubleList = new ArrayList<>();
     List<Long> timeList = new ArrayList<>();
     for (long i = 1000; i >= 0; i--) {
@@ -71,15 +71,15 @@ public class DoubleTVListTest {
         null,
         0,
         1000);
-    for (long i = 0; i < tvList.size; i++) {
-      Assert.assertEquals((double) tvList.size - i, tvList.getDouble((int) i), delta);
-      Assert.assertEquals(tvList.size - i, tvList.getTime((int) i));
+    for (long i = 0; i < tvList.rowCount; i++) {
+      Assert.assertEquals((double) tvList.rowCount - i, tvList.getDouble((int) i), delta);
+      Assert.assertEquals(tvList.rowCount - i, tvList.getTime((int) i));
     }
   }
 
   @Test
   public void testPutDoublesWithBitMap() {
-    DoubleTVList tvList = new DoubleTVList();
+    DoubleTVList tvList = DoubleTVList.newList();
     List<Double> doubleList = new ArrayList<>();
     List<Long> timeList = new ArrayList<>();
     BitMap bitMap = new BitMap(1001);
@@ -110,7 +110,7 @@ public class DoubleTVListTest {
 
   @Test
   public void testClone() {
-    DoubleTVList tvList = new DoubleTVList();
+    DoubleTVList tvList = DoubleTVList.newList();
     List<Double> doubleList = new ArrayList<>();
     List<Long> timeList = new ArrayList<>();
     BitMap bitMap = new BitMap(1001);
@@ -129,7 +129,7 @@ public class DoubleTVListTest {
         1000);
     tvList.sort();
     DoubleTVList clonedTvList = tvList.clone();
-    for (long i = 0; i < tvList.size; i++) {
+    for (long i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(tvList.getDouble((int) i), clonedTvList.getDouble((int) i), delta);
       Assert.assertEquals(tvList.getTime((int) i), clonedTvList.getTime((int) i));
     }

@@ -19,11 +19,15 @@
 
 package org.apache.iotdb.db.rescon;
 
-import org.apache.iotdb.db.concurrent.IoTDBThreadPoolFactory;
+import org.apache.iotdb.commons.concurrent.IoTDBThreadPoolFactory;
+import org.apache.iotdb.commons.concurrent.ThreadName;
+import org.apache.iotdb.commons.utils.TestOnly;
 import org.apache.iotdb.db.conf.IoTDBConfig;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
+import org.apache.iotdb.db.engine.compaction.execute.exception.CompactionFileCountExceededException;
+import org.apache.iotdb.db.engine.compaction.execute.exception.CompactionMemoryNotEnoughException;
 import org.apache.iotdb.db.engine.flush.FlushManager;
-import org.apache.iotdb.db.engine.storagegroup.StorageGroupInfo;
+import org.apache.iotdb.db.engine.storagegroup.DataRegionInfo;
 import org.apache.iotdb.db.engine.storagegroup.TsFileProcessor;
 import org.apache.iotdb.db.exception.WriteProcessRejectException;
 
@@ -34,6 +38,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class SystemInfo {
 
@@ -43,67 +49,77 @@ public class SystemInfo {
   private long totalStorageGroupMemCost = 0L;
   private volatile boolean rejected = false;
 
-  private static long memorySizeForWrite = config.getAllocateMemoryForWrite();
-  private Map<StorageGroupInfo, Long> reportedStorageGroupMemCostMap = new HashMap<>();
+  private long memorySizeForMemtable;
+  private long memorySizeForCompaction;
+  private Map<DataRegionInfo, Long> reportedStorageGroupMemCostMap = new HashMap<>();
 
   private long flushingMemTablesCost = 0L;
+  private AtomicLong compactionMemoryCost = new AtomicLong(0L);
+
+  private AtomicInteger compactionFileNumCost = new AtomicInteger(0);
+
+  private int totalFileLimitForCrossTask = config.getTotalFileLimitForCrossTask();
 
   private ExecutorService flushTaskSubmitThreadPool =
-      IoTDBThreadPoolFactory.newSingleThreadExecutor("FlushTask-Submit-Pool");
-  private static double FLUSH_THERSHOLD = memorySizeForWrite * config.getFlushProportion();
-  private static double REJECT_THERSHOLD = memorySizeForWrite * config.getRejectProportion();
+      IoTDBThreadPoolFactory.newSingleThreadExecutor(ThreadName.FLUSH_TASK_SUBMIT.getName());
+  private double FLUSH_THERSHOLD = memorySizeForMemtable * config.getFlushProportion();
+  private double REJECT_THERSHOLD = memorySizeForMemtable * config.getRejectProportion();
 
   private volatile boolean isEncodingFasterThanIo = true;
 
+  private SystemInfo() {
+    allocateWriteMemory();
+  }
+
   /**
-   * Report current mem cost of storage group to system. Called when the memory of storage group
-   * newly accumulates to IoTDBConfig.getStorageGroupSizeReportThreshold()
+   * Report current mem cost of database to system. Called when the memory of database newly
+   * accumulates to IoTDBConfig.getStorageGroupSizeReportThreshold()
    *
-   * @param storageGroupInfo storage group
+   * @param dataRegionInfo database
    * @throws WriteProcessRejectException
    */
   public synchronized boolean reportStorageGroupStatus(
-      StorageGroupInfo storageGroupInfo, TsFileProcessor tsFileProcessor)
+      DataRegionInfo dataRegionInfo, TsFileProcessor tsFileProcessor)
       throws WriteProcessRejectException {
+    long currentDataRegionMemCost = dataRegionInfo.getMemCost();
     long delta =
-        storageGroupInfo.getMemCost()
-            - reportedStorageGroupMemCostMap.getOrDefault(storageGroupInfo, 0L);
+        currentDataRegionMemCost - reportedStorageGroupMemCostMap.getOrDefault(dataRegionInfo, 0L);
     totalStorageGroupMemCost += delta;
     if (logger.isDebugEnabled()) {
       logger.debug(
-          "Report Storage Group Status to the system. "
-              + "After adding {}, current sg mem cost is {}.",
+          "Report database Status to the system. " + "After adding {}, current sg mem cost is {}.",
           delta,
           totalStorageGroupMemCost);
     }
-    reportedStorageGroupMemCostMap.put(storageGroupInfo, storageGroupInfo.getMemCost());
-    storageGroupInfo.setLastReportedSize(storageGroupInfo.getMemCost());
+    reportedStorageGroupMemCostMap.put(dataRegionInfo, currentDataRegionMemCost);
+    dataRegionInfo.setLastReportedSize(currentDataRegionMemCost);
     if (totalStorageGroupMemCost < FLUSH_THERSHOLD) {
       return true;
     } else if (totalStorageGroupMemCost >= FLUSH_THERSHOLD
         && totalStorageGroupMemCost < REJECT_THERSHOLD) {
       logger.debug(
-          "The total storage group mem costs are too large, call for flushing. "
+          "The total database mem costs are too large, call for flushing. "
               + "Current sg cost is {}",
           totalStorageGroupMemCost);
       chooseMemTablesToMarkFlush(tsFileProcessor);
       return true;
     } else {
       logger.info(
-          "Change system to reject status. Triggered by: logical SG ({}), mem cost delta ({}), totalSgMemCost ({}).",
-          storageGroupInfo.getStorageGroupProcessor().getLogicalStorageGroupName(),
+          "Change system to reject status. Triggered by: logical SG ({}), mem cost delta ({}), totalSgMemCost ({}), REJECT_THERSHOLD ({})",
+          dataRegionInfo.getDataRegion().getDatabaseName(),
           delta,
-          totalStorageGroupMemCost);
+          totalStorageGroupMemCost,
+          REJECT_THERSHOLD);
       rejected = true;
       if (chooseMemTablesToMarkFlush(tsFileProcessor)) {
-        if (totalStorageGroupMemCost < memorySizeForWrite) {
+        if (totalStorageGroupMemCost < memorySizeForMemtable) {
           return true;
         } else {
           throw new WriteProcessRejectException(
-              "Total Storage Group MemCost "
+              "Total database MemCost "
                   + totalStorageGroupMemCost
                   + " is over than memorySizeForWriting "
-                  + memorySizeForWrite);
+                  + memorySizeForMemtable);
         }
       } else {
         return false;
@@ -115,29 +131,31 @@ public class SystemInfo {
    * Report resetting the mem cost of sg to system. It will be called after flushing, closing and
    * failed to insert
    *
-   * @param storageGroupInfo storage group
+   * @param dataRegionInfo database
    */
-  public synchronized void resetStorageGroupStatus(StorageGroupInfo storageGroupInfo) {
+  public synchronized void resetStorageGroupStatus(DataRegionInfo dataRegionInfo) {
+    long currentDataRegionMemCost = dataRegionInfo.getMemCost();
     long delta = 0;
-
-    if (reportedStorageGroupMemCostMap.containsKey(storageGroupInfo)) {
-      delta = reportedStorageGroupMemCostMap.get(storageGroupInfo) - storageGroupInfo.getMemCost();
+    if (reportedStorageGroupMemCostMap.containsKey(dataRegionInfo)) {
+      delta = reportedStorageGroupMemCostMap.get(dataRegionInfo) - currentDataRegionMemCost;
       this.totalStorageGroupMemCost -= delta;
-      storageGroupInfo.setLastReportedSize(storageGroupInfo.getMemCost());
-      reportedStorageGroupMemCostMap.put(storageGroupInfo, storageGroupInfo.getMemCost());
+      dataRegionInfo.setLastReportedSize(currentDataRegionMemCost);
+      // report after reset sg status, because slow write may not reach the report threshold
+      dataRegionInfo.setNeedToReportToSystem(true);
+      reportedStorageGroupMemCostMap.put(dataRegionInfo, currentDataRegionMemCost);
     }
 
     if (totalStorageGroupMemCost >= FLUSH_THERSHOLD
         && totalStorageGroupMemCost < REJECT_THERSHOLD) {
       logger.debug(
           "SG ({}) released memory (delta: {}) but still exceeding flush proportion (totalSgMemCost: {}), call flush.",
-          storageGroupInfo.getStorageGroupProcessor().getLogicalStorageGroupName(),
+          dataRegionInfo.getDataRegion().getDatabaseName(),
           delta,
           totalStorageGroupMemCost);
       if (rejected) {
         logger.info(
             "SG ({}) released memory (delta: {}), set system to normal status (totalSgMemCost: {}).",
-            storageGroupInfo.getStorageGroupProcessor().getLogicalStorageGroupName(),
+            dataRegionInfo.getDataRegion().getDatabaseName(),
             delta,
             totalStorageGroupMemCost);
       }
@@ -146,7 +164,7 @@ public class SystemInfo {
     } else if (totalStorageGroupMemCost >= REJECT_THERSHOLD) {
       logger.warn(
           "SG ({}) released memory (delta: {}), but system is still in reject status (totalSgMemCost: {}).",
-          storageGroupInfo.getStorageGroupProcessor().getLogicalStorageGroupName(),
+          dataRegionInfo.getDataRegion().getDatabaseName(),
           delta,
           totalStorageGroupMemCost);
       logCurrentTotalSGMemory();
@@ -154,7 +172,7 @@ public class SystemInfo {
     } else {
       logger.debug(
           "SG ({}) released memory (delta: {}), system is in normal status (totalSgMemCost: {}).",
-          storageGroupInfo.getStorageGroupProcessor().getLogicalStorageGroupName(),
+          dataRegionInfo.getDataRegion().getDatabaseName(),
           delta,
           totalStorageGroupMemCost);
       logCurrentTotalSGMemory();
@@ -168,6 +186,110 @@ public class SystemInfo {
 
   public synchronized void resetFlushingMemTableCost(long flushingMemTableCost) {
     this.flushingMemTablesCost -= flushingMemTableCost;
+  }
+
+  public void addCompactionFileNum(int fileNum, long timeOutInSecond)
+      throws InterruptedException, CompactionFileCountExceededException {
+    if (fileNum > totalFileLimitForCrossTask) {
+      // source file num is greater than the max file num for compaction
+      throw new CompactionFileCountExceededException(
+          String.format(
+              "Required file num %d is greater than the max file num %d for compaction.",
+              fileNum, totalFileLimitForCrossTask));
+    }
+    long startTime = System.currentTimeMillis();
+    int originFileNum = this.compactionFileNumCost.get();
+    while (originFileNum + fileNum > totalFileLimitForCrossTask
+        || !compactionFileNumCost.compareAndSet(originFileNum, originFileNum + fileNum)) {
+      if (System.currentTimeMillis() - startTime >= timeOutInSecond * 1000L) {
+        throw new CompactionFileCountExceededException(
+            String.format(
+                "Failed to allocate %d files for compaction after %d seconds, max file num for compaction module is %d, %d files is used.",
+                fileNum, timeOutInSecond, totalFileLimitForCrossTask, originFileNum));
+      }
+      Thread.sleep(100);
+      originFileNum = this.compactionFileNumCost.get();
+    }
+  }
+
+  public void addCompactionMemoryCost(long memoryCost, long timeOutInSecond)
+      throws InterruptedException, CompactionMemoryNotEnoughException {
+    if (!config.isEnableCompactionMemControl()) {
+      return;
+    }
+    if (memoryCost > memorySizeForCompaction) {
+      // required memory cost is greater than the total memory budget for compaction
+      throw new CompactionMemoryNotEnoughException(
+          String.format(
+              "Required memory cost %d bytes is greater than "
+                  + "the total memory budget for compaction %d bytes",
+              memoryCost, memorySizeForCompaction));
+    }
+    long startTime = System.currentTimeMillis();
+    long originSize = this.compactionMemoryCost.get();
+    while (originSize + memoryCost > memorySizeForCompaction
+        || !compactionMemoryCost.compareAndSet(originSize, originSize + memoryCost)) {
+      if (System.currentTimeMillis() - startTime >= timeOutInSecond * 1000L) {
+        throw new CompactionMemoryNotEnoughException(
+            String.format(
+                "Failed to allocate %d bytes memory for compaction after %d seconds, "
+                    + "total memory budget for compaction module is %d bytes, %d bytes is used",
+                memoryCost, timeOutInSecond, memorySizeForCompaction, originSize));
+      }
+      Thread.sleep(100);
+      originSize = this.compactionMemoryCost.get();
+    }
+  }
+
+  public synchronized void resetCompactionMemoryCost(long compactionMemoryCost) {
+    this.compactionMemoryCost.addAndGet(-compactionMemoryCost);
+  }
+
+  public synchronized void decreaseCompactionFileNumCost(int fileNum) {
+    this.compactionFileNumCost.addAndGet(-fileNum);
+  }
+
+  public long getMemorySizeForCompaction() {
+    if (config.isEnableMemControl()) {
+      return memorySizeForCompaction;
+    } else {
+      return Long.MAX_VALUE;
+    }
+  }
+
+  public void allocateWriteMemory() {
+    memorySizeForMemtable =
+        (long)
+            (config.getAllocateMemoryForStorageEngine() * config.getWriteProportionForMemtable());
+    memorySizeForCompaction =
+        (long) (config.getAllocateMemoryForStorageEngine() * config.getCompactionProportion());
+    FLUSH_THERSHOLD = memorySizeForMemtable * config.getFlushProportion();
+    REJECT_THERSHOLD = memorySizeForMemtable * config.getRejectProportion();
+  }
+
+  @TestOnly
+  public void setMemorySizeForCompaction(long size) {
+    memorySizeForCompaction = size;
+  }
+
+  @TestOnly
+  public void setTotalFileLimitForCrossTask(int totalFileLimitForCrossTask) {
+    this.totalFileLimitForCrossTask = totalFileLimitForCrossTask;
+  }
+
+  @TestOnly
+  public int getTotalFileLimitForCrossTask() {
+    return totalFileLimitForCrossTask;
+  }
+
+  @TestOnly
+  public AtomicLong getCompactionMemoryCost() {
+    return compactionMemoryCost;
+  }
+
+  @TestOnly
+  public AtomicInteger getCompactionFileNumCost() {
+    return compactionFileNumCost;
   }
 
   private void logCurrentTotalSGMemory() {
@@ -187,8 +309,8 @@ public class SystemInfo {
     PriorityQueue<TsFileProcessor> allTsFileProcessors =
         new PriorityQueue<>(
             (o1, o2) -> Long.compare(o2.getWorkMemTableRamCost(), o1.getWorkMemTableRamCost()));
-    for (StorageGroupInfo storageGroupInfo : reportedStorageGroupMemCostMap.keySet()) {
-      allTsFileProcessors.addAll(storageGroupInfo.getAllReportedTsp());
+    for (DataRegionInfo dataRegionInfo : reportedStorageGroupMemCostMap.keySet()) {
+      allTsFileProcessors.addAll(dataRegionInfo.getAllReportedTsp());
     }
     boolean isCurrentTsFileProcessorSelected = false;
     long memCost = 0;
@@ -243,15 +365,15 @@ public class SystemInfo {
   }
 
   public synchronized void applyTemporaryMemoryForFlushing(long estimatedTemporaryMemSize) {
-    memorySizeForWrite -= estimatedTemporaryMemSize;
-    FLUSH_THERSHOLD = memorySizeForWrite * config.getFlushProportion();
-    REJECT_THERSHOLD = memorySizeForWrite * config.getRejectProportion();
+    memorySizeForMemtable -= estimatedTemporaryMemSize;
+    FLUSH_THERSHOLD = memorySizeForMemtable * config.getFlushProportion();
+    REJECT_THERSHOLD = memorySizeForMemtable * config.getRejectProportion();
   }
 
   public synchronized void releaseTemporaryMemoryForFlushing(long estimatedTemporaryMemSize) {
-    memorySizeForWrite += estimatedTemporaryMemSize;
-    FLUSH_THERSHOLD = memorySizeForWrite * config.getFlushProportion();
-    REJECT_THERSHOLD = memorySizeForWrite * config.getRejectProportion();
+    memorySizeForMemtable += estimatedTemporaryMemSize;
+    FLUSH_THERSHOLD = memorySizeForMemtable * config.getFlushProportion();
+    REJECT_THERSHOLD = memorySizeForMemtable * config.getRejectProportion();
   }
 
   public long getTotalMemTableSize() {

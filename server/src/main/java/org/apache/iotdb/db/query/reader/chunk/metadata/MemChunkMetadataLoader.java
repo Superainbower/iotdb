@@ -18,10 +18,12 @@
  */
 package org.apache.iotdb.db.query.reader.chunk.metadata;
 
+import org.apache.iotdb.commons.path.PartialPath;
 import org.apache.iotdb.db.engine.querycontext.ReadOnlyMemChunk;
 import org.apache.iotdb.db.engine.storagegroup.TsFileResource;
-import org.apache.iotdb.db.metadata.PartialPath;
+import org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet;
 import org.apache.iotdb.db.query.context.QueryContext;
+import org.apache.iotdb.db.query.reader.chunk.DiskChunkLoader;
 import org.apache.iotdb.tsfile.file.metadata.IChunkMetadata;
 import org.apache.iotdb.tsfile.file.metadata.ITimeSeriesMetadata;
 import org.apache.iotdb.tsfile.read.controller.IChunkMetadataLoader;
@@ -29,12 +31,18 @@ import org.apache.iotdb.tsfile.read.filter.basic.Filter;
 
 import java.util.List;
 
+import static org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet.CHUNK_METADATA_FILTER_NONALIGNED_MEM;
+import static org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet.LOAD_CHUNK_METADATA_LIST_NONALIGNED_MEM;
+
 public class MemChunkMetadataLoader implements IChunkMetadataLoader {
 
-  private TsFileResource resource;
-  private PartialPath seriesPath;
-  private QueryContext context;
-  private Filter timeFilter;
+  private final TsFileResource resource;
+  private final PartialPath seriesPath;
+  private final QueryContext context;
+  private final Filter timeFilter;
+
+  private static final SeriesScanCostMetricSet SERIES_SCAN_COST_METRIC_SET =
+      SeriesScanCostMetricSet.getInstance();
 
   public MemChunkMetadataLoader(
       TsFileResource resource, PartialPath seriesPath, QueryContext context, Filter timeFilter) {
@@ -45,37 +53,51 @@ public class MemChunkMetadataLoader implements IChunkMetadataLoader {
   }
 
   @Override
-  public List<IChunkMetadata> loadChunkMetadataList(ITimeSeriesMetadata timeseriesMetadata) {
-    List<IChunkMetadata> chunkMetadataList = resource.getChunkMetadataList();
+  public List<IChunkMetadata> loadChunkMetadataList(ITimeSeriesMetadata timeSeriesMetadata) {
+    long t1 = System.nanoTime();
+    try {
+      // There is no need to apply modifications to these, because we already do that while
+      // generating it in TSP
+      List<IChunkMetadata> chunkMetadataList = resource.getChunkMetadataList(seriesPath);
 
-    DiskChunkMetadataLoader.setDiskChunkLoader(chunkMetadataList, resource, seriesPath, context);
+      // it is ok, even if it is not thread safe, because the cost of creating a DiskChunkLoader is
+      // very cheap.
+      chunkMetadataList.forEach(
+          chunkMetadata -> {
+            if (chunkMetadata.needSetChunkLoader()) {
+              chunkMetadata.setFilePath(resource.getTsFilePath());
+              chunkMetadata.setClosed(resource.isClosed());
+              chunkMetadata.setChunkLoader(new DiskChunkLoader(context.isDebug()));
+            }
+          });
 
-    List<ReadOnlyMemChunk> memChunks = resource.getReadOnlyMemChunk();
-    if (memChunks != null) {
-      for (ReadOnlyMemChunk readOnlyMemChunk : memChunks) {
-        if (!memChunks.isEmpty()) {
-          chunkMetadataList.add(readOnlyMemChunk.getChunkMetaData());
+      List<ReadOnlyMemChunk> memChunks = resource.getReadOnlyMemChunk(seriesPath);
+      if (memChunks != null) {
+        for (ReadOnlyMemChunk readOnlyMemChunk : memChunks) {
+          if (!memChunks.isEmpty()) {
+            chunkMetadataList.add(readOnlyMemChunk.getChunkMetaData());
+          }
         }
       }
-    }
-    /*
-     * remove not satisfied ChunkMetaData
-     */
-    chunkMetadataList.removeIf(
-        chunkMetaData ->
-            (timeFilter != null
-                    && !timeFilter.satisfyStartEndTime(
-                        chunkMetaData.getStartTime(), chunkMetaData.getEndTime()))
-                || chunkMetaData.getStartTime() > chunkMetaData.getEndTime());
 
-    for (IChunkMetadata metadata : chunkMetadataList) {
-      metadata.setVersion(resource.getVersion());
-    }
-    return chunkMetadataList;
-  }
+      // remove not satisfied ChunkMetaData
+      long t2 = System.nanoTime();
+      chunkMetadataList.removeIf(
+          chunkMetaData ->
+              (timeFilter != null
+                      && !timeFilter.satisfyStartEndTime(
+                          chunkMetaData.getStartTime(), chunkMetaData.getEndTime()))
+                  || chunkMetaData.getStartTime() > chunkMetaData.getEndTime());
+      SERIES_SCAN_COST_METRIC_SET.recordSeriesScanCost(
+          CHUNK_METADATA_FILTER_NONALIGNED_MEM, System.nanoTime() - t2);
 
-  @Override
-  public boolean isMemChunkMetadataLoader() {
-    return true;
+      for (IChunkMetadata metadata : chunkMetadataList) {
+        metadata.setVersion(resource.getVersion());
+      }
+      return chunkMetadataList;
+    } finally {
+      SERIES_SCAN_COST_METRIC_SET.recordSeriesScanCost(
+          LOAD_CHUNK_METADATA_LIST_NONALIGNED_MEM, System.nanoTime() - t1);
+    }
   }
 }

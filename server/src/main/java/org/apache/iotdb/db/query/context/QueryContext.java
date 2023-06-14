@@ -19,13 +19,18 @@
 
 package org.apache.iotdb.db.query.context;
 
+import org.apache.iotdb.commons.path.AlignedPath;
+import org.apache.iotdb.commons.path.PartialPath;
+import org.apache.iotdb.commons.path.PatternTreeMap;
+import org.apache.iotdb.db.engine.modification.Deletion;
 import org.apache.iotdb.db.engine.modification.Modification;
 import org.apache.iotdb.db.engine.modification.ModificationFile;
-import org.apache.iotdb.db.metadata.PartialPath;
-import org.apache.iotdb.db.query.control.QueryTimeManager;
+import org.apache.iotdb.db.metadata.path.PatternTreeMapFactory;
+import org.apache.iotdb.db.metadata.path.PatternTreeMapFactory.ModsSerializer;
 import org.apache.iotdb.tsfile.file.metadata.IChunkMetadata;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,20 +43,21 @@ public class QueryContext {
    * The outer key is the path of a ModificationFile, the inner key in the name of a timeseries and
    * the value is the Modifications of a timeseries in this file.
    */
-  private Map<String, Map<String, List<Modification>>> filePathModCache = new ConcurrentHashMap<>();
+  private final Map<String, Map<String, List<Modification>>> filePathModCache =
+      new ConcurrentHashMap<>();
   /**
    * The key is the path of a ModificationFile and the value is all Modifications in this file. We
    * use this field because each call of Modification.getModifications() return a copy of the
    * Modifications, and we do not want it to create multiple copies within a query.
    */
-  private Map<String, List<Modification>> fileModCache = new HashMap<>();
+  private final Map<String, PatternTreeMap<Modification, ModsSerializer>> fileModCache =
+      new HashMap<>();
 
-  private long queryId;
+  protected long queryId;
 
   private long queryTimeLowerBound = Long.MIN_VALUE;
 
   private boolean debug;
-  private boolean enableTracing = false;
 
   /**
    * To reduce the cost of memory, we only keep the a certain size statement. For statement whose
@@ -80,7 +86,6 @@ public class QueryContext {
     this.startTime = startTime;
     this.statement = statement;
     this.timeout = timeout;
-    QueryTimeManager.getInstance().registerQuery(this);
   }
 
   /**
@@ -88,27 +93,76 @@ public class QueryContext {
    * them from 'modFile' and put then into the cache.
    */
   public List<Modification> getPathModifications(ModificationFile modFile, PartialPath path) {
+    // TODO change a way to do the existing check to avoid this IO call each time.
+
+    // if the mods file does not exist, do not add it to the cache
+    if (!modFile.exists()) {
+      return Collections.emptyList();
+    }
     Map<String, List<Modification>> fileModifications =
         filePathModCache.computeIfAbsent(modFile.getFilePath(), k -> new ConcurrentHashMap<>());
     return fileModifications.computeIfAbsent(
         path.getFullPath(),
         k -> {
-          List<Modification> allModifications = fileModCache.get(modFile.getFilePath());
+          PatternTreeMap<Modification, ModsSerializer> allModifications =
+              fileModCache.get(modFile.getFilePath());
           if (allModifications == null) {
-            allModifications = (List<Modification>) modFile.getModifications();
+            allModifications = PatternTreeMapFactory.getModsPatternTreeMap();
+            for (Modification modification : modFile.getModifications()) {
+              allModifications.append(modification.getPath(), modification);
+            }
             fileModCache.put(modFile.getFilePath(), allModifications);
           }
-          List<Modification> finalPathModifications = new ArrayList<>();
-          if (!allModifications.isEmpty()) {
-            allModifications.forEach(
-                modification -> {
-                  if (modification.getPath().matchFullPath(path)) {
-                    finalPathModifications.add(modification);
-                  }
-                });
-          }
-          return finalPathModifications;
+          return sortAndMerge(allModifications.getOverlapped(path));
         });
+  }
+
+  private List<Modification> sortAndMerge(List<Modification> modifications) {
+    modifications.sort(
+        (o1, o2) -> {
+          if (!o1.getType().equals(o2.getType())) {
+            return o1.getType().compareTo(o2.getType());
+          } else if (!o1.getPath().equals(o2.getPath())) {
+            return o1.getPath().compareTo(o2.getPath());
+          } else if (o1.getFileOffset() != o2.getFileOffset()) {
+            return (int) (o1.getFileOffset() - o2.getFileOffset());
+          } else {
+            if (o1.getType() == Modification.Type.DELETION) {
+              Deletion del1 = (Deletion) o1;
+              Deletion del2 = (Deletion) o2;
+              return del1.getTimeRange().compareTo(del2.getTimeRange());
+            }
+            throw new IllegalArgumentException();
+          }
+        });
+    List<Modification> result = new ArrayList<>();
+    if (!modifications.isEmpty()) {
+      Deletion current = ((Deletion) modifications.get(0)).clone();
+      for (int i = 1; i < modifications.size(); i++) {
+        Deletion del = (Deletion) modifications.get(i);
+        if (current.intersects(del)) {
+          current.merge(del);
+        } else {
+          result.add(current);
+          current = del.clone();
+        }
+      }
+      result.add(current);
+    }
+    return result;
+  }
+
+  /**
+   * Find the modifications of all aligned 'paths' in 'modFile'. If they are not in the cache, read
+   * them from 'modFile' and put then into the cache.
+   */
+  public List<List<Modification>> getPathModifications(ModificationFile modFile, AlignedPath path) {
+    int n = path.getMeasurementList().size();
+    List<List<Modification>> ans = new ArrayList<>(n);
+    for (int i = 0; i < n; i++) {
+      ans.add(getPathModifications(modFile, path.getPathWithMeasurement(i)));
+    }
+    return ans;
   }
 
   public long getQueryId() {
@@ -117,14 +171,6 @@ public class QueryContext {
 
   public boolean isDebug() {
     return debug;
-  }
-
-  public boolean isEnableTracing() {
-    return enableTracing;
-  }
-
-  public void setEnableTracing(boolean enableTracing) {
-    this.enableTracing = enableTracing;
   }
 
   public long getQueryTimeLowerBound() {

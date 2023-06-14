@@ -34,12 +34,12 @@ public class LongTVListTest {
 
   @Test
   public void testLongTVList1() {
-    LongTVList tvList = new LongTVList();
+    LongTVList tvList = LongTVList.newList();
     for (long i = 0; i < 1000; i++) {
       tvList.putLong(i, i);
     }
     tvList.sort();
-    for (long i = 0; i < tvList.size; i++) {
+    for (long i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(i, tvList.getLong((int) i));
       Assert.assertEquals(i, tvList.getTime((int) i));
     }
@@ -47,12 +47,12 @@ public class LongTVListTest {
 
   @Test
   public void testLongTVList2() {
-    LongTVList tvList = new LongTVList();
+    LongTVList tvList = LongTVList.newList();
     for (long i = 1000; i >= 0; i--) {
       tvList.putLong(i, i);
     }
     tvList.sort();
-    for (long i = 0; i < tvList.size; i++) {
+    for (long i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(i, tvList.getLong((int) i));
       Assert.assertEquals(i, tvList.getTime((int) i));
     }
@@ -61,7 +61,7 @@ public class LongTVListTest {
   @Test
   public void testLongTVList3() {
     Random random = new Random();
-    LongTVList tvList = new LongTVList();
+    LongTVList tvList = LongTVList.newList();
     List<TimeValuePair> inputs = new ArrayList<>();
     for (long i = 0; i < 10000; i++) {
       long time = random.nextInt(10000);
@@ -71,7 +71,7 @@ public class LongTVListTest {
     }
     tvList.sort();
     inputs.sort(TimeValuePair::compareTo);
-    for (long i = 0; i < tvList.size; i++) {
+    for (long i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(inputs.get((int) i).getTimestamp(), tvList.getTime((int) i));
       Assert.assertEquals(inputs.get((int) i).getValue().getLong(), tvList.getLong((int) i));
     }
@@ -79,7 +79,7 @@ public class LongTVListTest {
 
   @Test
   public void testPutLongsWithoutBitMap() {
-    LongTVList tvList = new LongTVList();
+    LongTVList tvList = LongTVList.newList();
     List<Long> longList = new ArrayList<>();
     List<Long> timeList = new ArrayList<>();
     for (long i = 1000; i >= 0; i--) {
@@ -92,15 +92,15 @@ public class LongTVListTest {
         null,
         0,
         1000);
-    for (long i = 0; i < tvList.size; i++) {
-      Assert.assertEquals(tvList.size - i, tvList.getLong((int) i));
-      Assert.assertEquals(tvList.size - i, tvList.getTime((int) i));
+    for (long i = 0; i < tvList.rowCount; i++) {
+      Assert.assertEquals(tvList.rowCount - i, tvList.getLong((int) i));
+      Assert.assertEquals(tvList.rowCount - i, tvList.getTime((int) i));
     }
   }
 
   @Test
   public void testPutIntsWithBitMap() {
-    LongTVList tvList = new LongTVList();
+    LongTVList tvList = LongTVList.newList();
     List<Long> longList = new ArrayList<>();
     List<Long> timeList = new ArrayList<>();
     BitMap bitMap = new BitMap(1001);
@@ -131,7 +131,7 @@ public class LongTVListTest {
 
   @Test
   public void testClone() {
-    LongTVList tvList = new LongTVList();
+    LongTVList tvList = LongTVList.newList();
     List<Long> longList = new ArrayList<>();
     List<Long> timeList = new ArrayList<>();
     BitMap bitMap = new BitMap(1001);
@@ -150,7 +150,7 @@ public class LongTVListTest {
         1000);
     tvList.sort();
     LongTVList clonedTvList = tvList.clone();
-    for (long i = 0; i < tvList.size; i++) {
+    for (long i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(tvList.getLong((int) i), clonedTvList.getLong((int) i));
       Assert.assertEquals(tvList.getTime((int) i), clonedTvList.getTime((int) i));
     }

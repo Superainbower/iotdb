@@ -18,10 +18,10 @@
  */
 package org.apache.iotdb.db.tools.upgrade;
 
+import org.apache.iotdb.commons.exception.IllegalPathException;
 import org.apache.iotdb.db.engine.StorageEngine;
 import org.apache.iotdb.db.engine.storagegroup.TsFileResource;
-import org.apache.iotdb.db.exception.metadata.IllegalPathException;
-import org.apache.iotdb.db.tools.TsFileRewriteTool;
+import org.apache.iotdb.db.tools.TsFileSplitByPartitionTool;
 import org.apache.iotdb.tsfile.common.conf.TSFileConfig;
 import org.apache.iotdb.tsfile.common.constant.TsFileConstant;
 import org.apache.iotdb.tsfile.exception.write.WriteProcessException;
@@ -35,7 +35,7 @@ import org.apache.iotdb.tsfile.read.common.BatchData;
 import org.apache.iotdb.tsfile.v2.read.TsFileSequenceReaderForV2;
 import org.apache.iotdb.tsfile.v2.read.reader.page.PageReaderV2;
 import org.apache.iotdb.tsfile.write.chunk.ChunkWriterImpl;
-import org.apache.iotdb.tsfile.write.schema.UnaryMeasurementSchema;
+import org.apache.iotdb.tsfile.write.schema.MeasurementSchema;
 import org.apache.iotdb.tsfile.write.writer.TsFileIOWriter;
 
 import org.slf4j.Logger;
@@ -47,7 +47,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-public class TsFileOnlineUpgradeTool extends TsFileRewriteTool {
+public class TsFileOnlineUpgradeTool extends TsFileSplitByPartitionTool {
 
   private static final Logger logger = LoggerFactory.getLogger(TsFileOnlineUpgradeTool.class);
 
@@ -122,8 +122,8 @@ public class TsFileOnlineUpgradeTool extends TsFileRewriteTool {
               }
             } else {
               ChunkHeader header = ((TsFileSequenceReaderForV2) reader).readChunkHeader();
-              UnaryMeasurementSchema measurementSchema =
-                  new UnaryMeasurementSchema(
+              MeasurementSchema measurementSchema =
+                  new MeasurementSchema(
                       header.getMeasurementID(),
                       header.getDataType(),
                       header.getEncodingType(),
@@ -243,7 +243,7 @@ public class TsFileOnlineUpgradeTool extends TsFileRewriteTool {
       TSDataType dataType,
       TSEncoding encoding,
       PageHeader pageHeader,
-      UnaryMeasurementSchema schema,
+      MeasurementSchema schema,
       String deviceId,
       long chunkHeaderOffset)
       throws IllegalPathException {
@@ -256,7 +256,7 @@ public class TsFileOnlineUpgradeTool extends TsFileRewriteTool {
   }
 
   protected void decodeAndWritePage(
-      UnaryMeasurementSchema schema,
+      MeasurementSchema schema,
       ByteBuffer pageData,
       Map<Long, ChunkWriterImpl> partitionChunkWriterMap)
       throws IOException {

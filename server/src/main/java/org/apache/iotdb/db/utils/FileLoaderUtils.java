@@ -18,62 +18,66 @@
  */
 package org.apache.iotdb.db.utils;
 
+import org.apache.iotdb.commons.path.AlignedPath;
+import org.apache.iotdb.commons.path.PartialPath;
 import org.apache.iotdb.db.engine.cache.TimeSeriesMetadataCache;
+import org.apache.iotdb.db.engine.cache.TimeSeriesMetadataCache.TimeSeriesMetadataCacheKey;
 import org.apache.iotdb.db.engine.modification.Modification;
 import org.apache.iotdb.db.engine.storagegroup.TsFileResource;
-import org.apache.iotdb.db.metadata.PartialPath;
-import org.apache.iotdb.db.metadata.VectorPartialPath;
+import org.apache.iotdb.db.engine.storagegroup.TsFileResourceStatus;
+import org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet;
 import org.apache.iotdb.db.query.context.QueryContext;
-import org.apache.iotdb.db.query.control.FileReaderManager;
-import org.apache.iotdb.db.query.reader.chunk.MemChunkLoader;
-import org.apache.iotdb.db.query.reader.chunk.MemChunkReader;
+import org.apache.iotdb.db.query.reader.chunk.metadata.DiskAlignedChunkMetadataLoader;
 import org.apache.iotdb.db.query.reader.chunk.metadata.DiskChunkMetadataLoader;
+import org.apache.iotdb.db.query.reader.chunk.metadata.MemAlignedChunkMetadataLoader;
 import org.apache.iotdb.db.query.reader.chunk.metadata.MemChunkMetadataLoader;
+import org.apache.iotdb.tsfile.file.metadata.AlignedTimeSeriesMetadata;
+import org.apache.iotdb.tsfile.file.metadata.ChunkGroupMetadata;
 import org.apache.iotdb.tsfile.file.metadata.ChunkMetadata;
 import org.apache.iotdb.tsfile.file.metadata.IChunkMetadata;
 import org.apache.iotdb.tsfile.file.metadata.ITimeSeriesMetadata;
 import org.apache.iotdb.tsfile.file.metadata.TimeseriesMetadata;
-import org.apache.iotdb.tsfile.file.metadata.VectorChunkMetadata;
-import org.apache.iotdb.tsfile.file.metadata.VectorTimeSeriesMetadata;
 import org.apache.iotdb.tsfile.read.TsFileSequenceReader;
-import org.apache.iotdb.tsfile.read.common.Chunk;
-import org.apache.iotdb.tsfile.read.common.Path;
 import org.apache.iotdb.tsfile.read.controller.IChunkLoader;
 import org.apache.iotdb.tsfile.read.filter.basic.Filter;
 import org.apache.iotdb.tsfile.read.reader.IChunkReader;
 import org.apache.iotdb.tsfile.read.reader.IPageReader;
-import org.apache.iotdb.tsfile.read.reader.chunk.ChunkReader;
-import org.apache.iotdb.tsfile.read.reader.chunk.VectorChunkReader;
+import org.apache.iotdb.tsfile.write.writer.TsFileIOWriter;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 
+import static org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet.LOAD_TIMESERIES_METADATA_ALIGNED_DISK;
+import static org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet.LOAD_TIMESERIES_METADATA_ALIGNED_MEM;
+import static org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet.LOAD_TIMESERIES_METADATA_NONALIGNED_DISK;
+import static org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet.LOAD_TIMESERIES_METADATA_NONALIGNED_MEM;
+import static org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet.TIMESERIES_METADATA_MODIFICATION_ALIGNED;
+import static org.apache.iotdb.db.mpp.metric.SeriesScanCostMetricSet.TIMESERIES_METADATA_MODIFICATION_NONALIGNED;
+
 public class FileLoaderUtils {
 
-  private FileLoaderUtils() {}
+  private static final SeriesScanCostMetricSet SERIES_SCAN_COST_METRIC_SET =
+      SeriesScanCostMetricSet.getInstance();
 
-  public static void checkTsFileResource(TsFileResource tsFileResource) throws IOException {
-    if (!tsFileResource.resourceFileExists()) {
-      // .resource file does not exist, read file metadata and recover tsfile resource
-      try (TsFileSequenceReader reader =
-          new TsFileSequenceReader(tsFileResource.getTsFile().getAbsolutePath())) {
-        updateTsFileResource(reader, tsFileResource);
-      }
-      // write .resource file
-      tsFileResource.serialize();
-    } else {
-      tsFileResource.deserialize();
-    }
-    tsFileResource.setClosed(true);
+  private FileLoaderUtils() {
+    // empty constructor
   }
 
   public static void updateTsFileResource(
       TsFileSequenceReader reader, TsFileResource tsFileResource) throws IOException {
-    for (Entry<String, List<TimeseriesMetadata>> entry :
-        reader.getAllTimeseriesMetadata().entrySet()) {
+    updateTsFileResource(reader.getAllTimeseriesMetadata(false), tsFileResource);
+    tsFileResource.updatePlanIndexes(reader.getMinPlanIndex());
+    tsFileResource.updatePlanIndexes(reader.getMaxPlanIndex());
+  }
+
+  public static void updateTsFileResource(
+      Map<String, List<TimeseriesMetadata>> device2Metadata, TsFileResource tsFileResource) {
+    for (Entry<String, List<TimeseriesMetadata>> entry : device2Metadata.entrySet()) {
       for (TimeseriesMetadata timeseriesMetaData : entry.getValue()) {
         tsFileResource.updateStartTime(
             entry.getKey(), timeseriesMetaData.getStatistics().getStartTime());
@@ -81,8 +85,27 @@ public class FileLoaderUtils {
             entry.getKey(), timeseriesMetaData.getStatistics().getEndTime());
       }
     }
-    tsFileResource.updatePlanIndexes(reader.getMinPlanIndex());
-    tsFileResource.updatePlanIndexes(reader.getMaxPlanIndex());
+  }
+
+  /**
+   * Generate {@link TsFileResource} from a closed {@link TsFileIOWriter}. Notice that the writer
+   * should have executed {@link TsFileIOWriter#endFile()}. And this method will not record plan
+   * Index of this writer.
+   *
+   * @param writer a {@link TsFileIOWriter}
+   * @return a updated {@link TsFileResource}
+   */
+  public static TsFileResource generateTsFileResource(TsFileIOWriter writer) {
+    TsFileResource resource = new TsFileResource(writer.getFile());
+    for (ChunkGroupMetadata chunkGroupMetadata : writer.getChunkGroupMetadataList()) {
+      String device = chunkGroupMetadata.getDevice();
+      for (ChunkMetadata chunkMetadata : chunkGroupMetadata.getChunkMetadataList()) {
+        resource.updateStartTime(device, chunkMetadata.getStartTime());
+        resource.updateEndTime(device, chunkMetadata.getEndTime());
+      }
+    }
+    resource.setStatus(TsFileResourceStatus.NORMAL);
+    return resource;
   }
 
   /**
@@ -92,63 +115,75 @@ public class FileLoaderUtils {
    * @param filter any filter, only used to check time range
    */
   @SuppressWarnings("squid:S3776") // Suppress high Cognitive Complexity warning
-  public static ITimeSeriesMetadata loadTimeSeriesMetadata(
+  public static TimeseriesMetadata loadTimeSeriesMetadata(
       TsFileResource resource,
       PartialPath seriesPath,
       QueryContext context,
       Filter filter,
       Set<String> allSensors)
       throws IOException {
-    // deal with vector
-    if (seriesPath instanceof VectorPartialPath) {
-      return loadVectorTimeSeriesMetadata(
-          resource, (VectorPartialPath) seriesPath, context, filter, allSensors);
-    }
+    long t1 = System.nanoTime();
+    boolean loadFromMem = false;
+    try {
+      // common path
+      TimeseriesMetadata timeSeriesMetadata;
+      // If the tsfile is closed, we need to load from tsfile
+      if (resource.isClosed()) {
+        // when resource.getTimeIndexType() == 1, TsFileResource.timeIndexType is deviceTimeIndex
+        // we should not ignore the non-exist of device in TsFileMetadata
+        timeSeriesMetadata =
+            TimeSeriesMetadataCache.getInstance()
+                .get(
+                    new TimeSeriesMetadataCache.TimeSeriesMetadataCacheKey(
+                        resource.getTsFilePath(),
+                        seriesPath.getDevice(),
+                        seriesPath.getMeasurement()),
+                    allSensors,
+                    resource.getTimeIndexType() != 1,
+                    context.isDebug());
+        if (timeSeriesMetadata != null) {
+          timeSeriesMetadata.setChunkMetadataLoader(
+              new DiskChunkMetadataLoader(resource, seriesPath, context, filter));
+        }
+      } else { // if the tsfile is unclosed, we just get it directly from TsFileResource
+        loadFromMem = true;
 
-    // common path
-    ITimeSeriesMetadata timeSeriesMetadata;
-    // If the tsfile is closed, we need to load from tsfile
-    if (resource.isClosed()) {
-      if (!resource.getTsFile().exists()) {
-        return null;
+        timeSeriesMetadata = (TimeseriesMetadata) resource.getTimeSeriesMetadata(seriesPath);
+        if (timeSeriesMetadata != null) {
+          timeSeriesMetadata.setChunkMetadataLoader(
+              new MemChunkMetadataLoader(resource, seriesPath, context, filter));
+        }
       }
-      timeSeriesMetadata =
-          TimeSeriesMetadataCache.getInstance()
-              .get(
-                  new TimeSeriesMetadataCache.TimeSeriesMetadataCacheKey(
-                      resource.getTsFilePath(),
-                      seriesPath.getDevice(),
-                      seriesPath.getMeasurement()),
-                  allSensors,
-                  context.isDebug());
-      if (timeSeriesMetadata != null) {
-        timeSeriesMetadata.setChunkMetadataLoader(
-            new DiskChunkMetadataLoader(resource, seriesPath, context, filter));
-      }
-    } else { // if the tsfile is unclosed, we just get it directly from TsFileResource
-      timeSeriesMetadata = resource.getTimeSeriesMetadata();
-      if (timeSeriesMetadata != null) {
-        timeSeriesMetadata.setChunkMetadataLoader(
-            new MemChunkMetadataLoader(resource, seriesPath, context, filter));
-      }
-    }
 
-    if (timeSeriesMetadata != null) {
-      List<Modification> pathModifications =
-          context.getPathModifications(resource.getModFile(), seriesPath);
-      timeSeriesMetadata.setModified(!pathModifications.isEmpty());
-      if (timeSeriesMetadata.getStatistics().getStartTime()
-          > timeSeriesMetadata.getStatistics().getEndTime()) {
-        return null;
+      if (timeSeriesMetadata != null) {
+        long t2 = System.nanoTime();
+        try {
+          List<Modification> pathModifications =
+              context.getPathModifications(resource.getModFile(), seriesPath);
+          timeSeriesMetadata.setModified(!pathModifications.isEmpty());
+          if (timeSeriesMetadata.getStatistics().getStartTime()
+              > timeSeriesMetadata.getStatistics().getEndTime()) {
+            return null;
+          }
+          if (filter != null
+              && !filter.satisfyStartEndTime(
+                  timeSeriesMetadata.getStatistics().getStartTime(),
+                  timeSeriesMetadata.getStatistics().getEndTime())) {
+            return null;
+          }
+        } finally {
+          SERIES_SCAN_COST_METRIC_SET.recordSeriesScanCost(
+              TIMESERIES_METADATA_MODIFICATION_NONALIGNED, System.nanoTime() - t2);
+        }
       }
-      if (filter != null
-          && !filter.satisfyStartEndTime(
-              timeSeriesMetadata.getStatistics().getStartTime(),
-              timeSeriesMetadata.getStatistics().getEndTime())) {
-        return null;
-      }
+      return timeSeriesMetadata;
+    } finally {
+      SERIES_SCAN_COST_METRIC_SET.recordSeriesScanCost(
+          loadFromMem
+              ? LOAD_TIMESERIES_METADATA_NONALIGNED_MEM
+              : LOAD_TIMESERIES_METADATA_NONALIGNED_DISK,
+          System.nanoTime() - t1);
     }
-    return timeSeriesMetadata;
   }
 
   /**
@@ -157,84 +192,109 @@ public class FileLoaderUtils {
    * @param resource corresponding TsFileResource
    * @param vectorPath instance of VectorPartialPath, vector's full path, e.g. (root.sg1.d1.vector,
    *     [root.sg1.d1.vector.s1, root.sg1.d1.vector.s2])
-   * @param allSensors all sensors belonging to this device that appear in query
    */
-  private static VectorTimeSeriesMetadata loadVectorTimeSeriesMetadata(
-      TsFileResource resource,
-      VectorPartialPath vectorPath,
-      QueryContext context,
-      Filter filter,
-      Set<String> allSensors)
+  public static AlignedTimeSeriesMetadata loadTimeSeriesMetadata(
+      TsFileResource resource, AlignedPath vectorPath, QueryContext context, Filter filter)
       throws IOException {
-    VectorTimeSeriesMetadata vectorTimeSeriesMetadata = null;
-    // If the tsfile is closed, we need to load from tsfile
-    if (resource.isClosed()) {
-      if (!resource.getTsFile().exists()) {
-        return null;
-      }
-      // load all the TimeseriesMetadata of vector, the first one is for time column and the
-      // remaining is for sub sensors
-      // the order of timeSeriesMetadata list is same as subSensorList's order
-      List<TimeseriesMetadata> timeSeriesMetadata =
-          TimeSeriesMetadataCache.getInstance()
-              .get(
-                  new TimeSeriesMetadataCache.TimeSeriesMetadataCacheKey(
-                      resource.getTsFilePath(),
-                      vectorPath.getDevice(),
-                      vectorPath.getMeasurement()),
-                  new ArrayList<>(vectorPath.getSubSensorsList()),
-                  allSensors,
-                  context.isDebug());
+    long t1 = System.nanoTime();
+    boolean loadFromMem = false;
+    try {
+      AlignedTimeSeriesMetadata alignedTimeSeriesMetadata = null;
+      // If the tsfile is closed, we need to load from tsfile
+      if (resource.isClosed()) {
+        // load all the TimeseriesMetadata of vector, the first one is for time column and the
+        // remaining is for sub sensors
+        // the order of timeSeriesMetadata list is same as subSensorList's order
+        TimeSeriesMetadataCache cache = TimeSeriesMetadataCache.getInstance();
+        List<String> valueMeasurementList = vectorPath.getMeasurementList();
+        Set<String> allSensors = new HashSet<>(valueMeasurementList);
+        allSensors.add("");
+        boolean isDebug = context.isDebug();
+        String filePath = resource.getTsFilePath();
+        String deviceId = vectorPath.getDevice();
 
-      // assemble VectorTimeSeriesMetadata
-      if (timeSeriesMetadata != null && !timeSeriesMetadata.isEmpty()) {
-        timeSeriesMetadata
-            .get(0)
-            .setChunkMetadataLoader(
-                new DiskChunkMetadataLoader(resource, vectorPath, context, filter));
-        for (int i = 1; i < timeSeriesMetadata.size(); i++) {
-          PartialPath subPath = vectorPath.getPathWithSubSensor(i - 1);
-          timeSeriesMetadata
-              .get(i)
-              .setChunkMetadataLoader(
-                  new DiskChunkMetadataLoader(resource, subPath, context, filter));
+        // when resource.getTimeIndexType() == 1, TsFileResource.timeIndexType is deviceTimeIndex
+        // we should not ignore the non-exist of device in TsFileMetadata
+        TimeseriesMetadata timeColumn =
+            cache.get(
+                new TimeSeriesMetadataCacheKey(filePath, deviceId, ""),
+                allSensors,
+                resource.getTimeIndexType() != 1,
+                isDebug);
+        if (timeColumn != null) {
+          List<TimeseriesMetadata> valueTimeSeriesMetadataList =
+              new ArrayList<>(valueMeasurementList.size());
+          // if all the queried aligned sensors does not exist, we will return null
+          boolean exist = false;
+          for (String valueMeasurement : valueMeasurementList) {
+            TimeseriesMetadata valueColumn =
+                cache.get(
+                    new TimeSeriesMetadataCacheKey(filePath, deviceId, valueMeasurement),
+                    allSensors,
+                    resource.getTimeIndexType() != 1,
+                    isDebug);
+            exist = (exist || (valueColumn != null));
+            valueTimeSeriesMetadataList.add(valueColumn);
+          }
+          if (exist) {
+            alignedTimeSeriesMetadata =
+                new AlignedTimeSeriesMetadata(timeColumn, valueTimeSeriesMetadataList);
+            alignedTimeSeriesMetadata.setChunkMetadataLoader(
+                new DiskAlignedChunkMetadataLoader(resource, vectorPath, context, filter));
+          }
         }
-        vectorTimeSeriesMetadata =
-            new VectorTimeSeriesMetadata(
-                timeSeriesMetadata.get(0),
-                timeSeriesMetadata.subList(1, timeSeriesMetadata.size()));
-      }
-    } else { // if the tsfile is unclosed, we just get it directly from TsFileResource
-      vectorTimeSeriesMetadata = (VectorTimeSeriesMetadata) resource.getTimeSeriesMetadata();
-      if (vectorTimeSeriesMetadata != null) {
-        vectorTimeSeriesMetadata.setChunkMetadataLoader(
-            new MemChunkMetadataLoader(resource, vectorPath, context, filter));
-      }
-    }
+      } else { // if the tsfile is unclosed, we just get it directly from TsFileResource
+        loadFromMem = true;
 
-    if (vectorTimeSeriesMetadata != null) {
-      List<Modification> pathModifications =
-          context.getPathModifications(resource.getModFile(), vectorPath);
-      vectorTimeSeriesMetadata.getTimeseriesMetadata().setModified(!pathModifications.isEmpty());
-      if (vectorTimeSeriesMetadata.getTimeseriesMetadata().getStatistics().getStartTime()
-          > vectorTimeSeriesMetadata.getTimeseriesMetadata().getStatistics().getEndTime()) {
-        return null;
+        alignedTimeSeriesMetadata =
+            (AlignedTimeSeriesMetadata) resource.getTimeSeriesMetadata(vectorPath);
+        if (alignedTimeSeriesMetadata != null) {
+          alignedTimeSeriesMetadata.setChunkMetadataLoader(
+              new MemAlignedChunkMetadataLoader(resource, vectorPath, context, filter));
+        }
       }
-      if (filter != null
-          && !filter.satisfyStartEndTime(
-              vectorTimeSeriesMetadata.getTimeseriesMetadata().getStatistics().getStartTime(),
-              vectorTimeSeriesMetadata.getTimeseriesMetadata().getStatistics().getEndTime())) {
-        return null;
+
+      if (alignedTimeSeriesMetadata != null) {
+        long t2 = System.nanoTime();
+        try {
+          if (alignedTimeSeriesMetadata.getTimeseriesMetadata().getStatistics().getStartTime()
+              > alignedTimeSeriesMetadata.getTimeseriesMetadata().getStatistics().getEndTime()) {
+            return null;
+          }
+          if (filter != null
+              && !filter.satisfyStartEndTime(
+                  alignedTimeSeriesMetadata.getTimeseriesMetadata().getStatistics().getStartTime(),
+                  alignedTimeSeriesMetadata.getTimeseriesMetadata().getStatistics().getEndTime())) {
+            return null;
+          }
+
+          // set modifications to each aligned path
+          List<TimeseriesMetadata> valueTimeSeriesMetadataList =
+              alignedTimeSeriesMetadata.getValueTimeseriesMetadataList();
+          boolean modified = false;
+          for (int i = 0; i < valueTimeSeriesMetadataList.size(); i++) {
+            if (valueTimeSeriesMetadataList.get(i) != null) {
+              List<Modification> pathModifications =
+                  context.getPathModifications(
+                      resource.getModFile(), vectorPath.getPathWithMeasurement(i));
+              valueTimeSeriesMetadataList.get(i).setModified(!pathModifications.isEmpty());
+              modified = (modified || !pathModifications.isEmpty());
+            }
+          }
+          alignedTimeSeriesMetadata.getTimeseriesMetadata().setModified(modified);
+        } finally {
+          SERIES_SCAN_COST_METRIC_SET.recordSeriesScanCost(
+              TIMESERIES_METADATA_MODIFICATION_ALIGNED, System.nanoTime() - t2);
+        }
       }
-      List<TimeseriesMetadata> valueTimeSeriesMetadataList =
-          vectorTimeSeriesMetadata.getValueTimeseriesMetadataList();
-      for (int i = 0; i < valueTimeSeriesMetadataList.size(); i++) {
-        pathModifications =
-            context.getPathModifications(resource.getModFile(), vectorPath.getPathWithSubSensor(i));
-        valueTimeSeriesMetadataList.get(i).setModified(!pathModifications.isEmpty());
-      }
+      return alignedTimeSeriesMetadata;
+    } finally {
+      SERIES_SCAN_COST_METRIC_SET.recordSeriesScanCost(
+          loadFromMem
+              ? LOAD_TIMESERIES_METADATA_ALIGNED_MEM
+              : LOAD_TIMESERIES_METADATA_ALIGNED_DISK,
+          System.nanoTime() - t1);
     }
-    return vectorTimeSeriesMetadata;
   }
 
   /**
@@ -258,30 +318,8 @@ public class FileLoaderUtils {
     if (chunkMetaData == null) {
       throw new IOException("Can't init null chunkMeta");
     }
-    IChunkReader chunkReader;
     IChunkLoader chunkLoader = chunkMetaData.getChunkLoader();
-    if (chunkLoader instanceof MemChunkLoader) {
-      MemChunkLoader memChunkLoader = (MemChunkLoader) chunkLoader;
-      chunkReader = new MemChunkReader(memChunkLoader.getChunk(), timeFilter);
-    } else {
-      if (chunkMetaData instanceof ChunkMetadata) {
-        Chunk chunk = chunkLoader.loadChunk((ChunkMetadata) chunkMetaData);
-        chunk.setFromOldFile(chunkMetaData.isFromOldTsFile());
-        chunkReader = new ChunkReader(chunk, timeFilter);
-        chunkReader.hasNextSatisfiedPage();
-      } else {
-        VectorChunkMetadata vectorChunkMetadata = (VectorChunkMetadata) chunkMetaData;
-        Chunk timeChunk = vectorChunkMetadata.getTimeChunk();
-        List<Chunk> valueChunkList = vectorChunkMetadata.getValueChunkList();
-        chunkReader = new VectorChunkReader(timeChunk, valueChunkList, timeFilter);
-      }
-    }
+    IChunkReader chunkReader = chunkLoader.getChunkReader(chunkMetaData, timeFilter);
     return chunkReader.loadPageReaderList();
-  }
-
-  public static List<IChunkMetadata> getChunkMetadataList(Path path, String filePath)
-      throws IOException {
-    TsFileSequenceReader tsFileReader = FileReaderManager.getInstance().get(filePath, true);
-    return new ArrayList<>(tsFileReader.getChunkMetadataList(path));
   }
 }

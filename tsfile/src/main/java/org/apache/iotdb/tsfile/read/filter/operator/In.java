@@ -26,11 +26,13 @@ import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -38,7 +40,7 @@ import java.util.Set;
  *
  * @param <T> comparable data type
  */
-public class In<T extends Comparable<T>> implements Filter {
+public class In<T extends Comparable<T>> implements Filter, Serializable {
 
   private static final long serialVersionUID = 8572705136773595399L;
 
@@ -62,6 +64,11 @@ public class In<T extends Comparable<T>> implements Filter {
   }
 
   @Override
+  public boolean allSatisfy(Statistics statistics) {
+    return false;
+  }
+
+  @Override
   public boolean satisfy(long time, Object value) {
     Object v = filterType == FilterType.TIME_FILTER ? time : value;
     return this.values.contains(v) != not;
@@ -74,12 +81,12 @@ public class In<T extends Comparable<T>> implements Filter {
 
   @Override
   public boolean containStartEndTime(long startTime, long endTime) {
-    return true;
+    return false;
   }
 
   @Override
   public Filter copy() {
-    return new In(new HashSet(values), filterType, not);
+    return new In<>(new HashSet<>(values), filterType, not);
   }
 
   @Override
@@ -88,7 +95,7 @@ public class In<T extends Comparable<T>> implements Filter {
       outputStream.write(getSerializeId().ordinal());
       outputStream.write(filterType.ordinal());
       ReadWriteIOUtils.write(not, outputStream);
-      outputStream.write(values.size());
+      ReadWriteIOUtils.write(values.size(), outputStream);
       for (T value : values) {
         ReadWriteIOUtils.writeObject(value, outputStream);
       }
@@ -101,22 +108,42 @@ public class In<T extends Comparable<T>> implements Filter {
   public void deserialize(ByteBuffer buffer) {
     filterType = FilterType.values()[buffer.get()];
     not = ReadWriteIOUtils.readBool(buffer);
-    values = new HashSet<>();
-    for (int i = 0; i < buffer.get(); i++) {
+    int size = ReadWriteIOUtils.readInt(buffer);
+    values = new HashSet<>(size);
+    for (int i = 0; i < size; i++) {
       values.add((T) ReadWriteIOUtils.readObject(buffer));
     }
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (!(o instanceof In)) {
+      return false;
+    }
+    In<?> in = (In<?>) o;
+    return in.filterType == filterType && in.values.equals(values) && in.not == not;
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(values, not, filterType);
   }
 
   @Override
   public String toString() {
     List<T> valueList = new ArrayList<>(values);
     Collections.sort(valueList);
-    return filterType + " < " + "reverse: " + not + ", " + valueList;
+    return filterType + (not ? " not in " : " in ") + valueList;
   }
 
   @Override
   public FilterSerializeId getSerializeId() {
     return FilterSerializeId.IN;
+  }
+
+  @Override
+  public Filter reverse() {
+    return new In<>(new HashSet<>(values), filterType, !not);
   }
 
   public Set<T> getValues() {

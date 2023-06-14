@@ -18,8 +18,8 @@
  */
 package org.apache.iotdb.db.engine.flush.pool;
 
-import org.apache.iotdb.db.concurrent.IoTDBThreadPoolFactory;
-import org.apache.iotdb.db.concurrent.ThreadName;
+import org.apache.iotdb.commons.concurrent.IoTDBThreadPoolFactory;
+import org.apache.iotdb.commons.concurrent.ThreadName;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
 import org.apache.iotdb.db.rescon.AbstractPoolManager;
 
@@ -31,8 +31,8 @@ public class FlushTaskPoolManager extends AbstractPoolManager {
   private static final Logger LOGGER = LoggerFactory.getLogger(FlushTaskPoolManager.class);
 
   private FlushTaskPoolManager() {
-    int threadCnt = IoTDBDescriptor.getInstance().getConfig().getConcurrentFlushThread();
-    pool = IoTDBThreadPoolFactory.newFixedThreadPool(threadCnt, ThreadName.FLUSH_SERVICE.getName());
+    int threadCnt = IoTDBDescriptor.getInstance().getConfig().getFlushThreadCount();
+    pool = IoTDBThreadPoolFactory.newFixedThreadPool(threadCnt, ThreadName.FLUSH.getName());
   }
 
   public static FlushTaskPoolManager getInstance() {
@@ -52,9 +52,8 @@ public class FlushTaskPoolManager extends AbstractPoolManager {
   @Override
   public void start() {
     if (pool == null) {
-      int threadCnt = IoTDBDescriptor.getInstance().getConfig().getConcurrentFlushThread();
-      pool =
-          IoTDBThreadPoolFactory.newFixedThreadPool(threadCnt, ThreadName.FLUSH_SERVICE.getName());
+      int threadCnt = IoTDBDescriptor.getInstance().getConfig().getFlushThreadCount();
+      pool = IoTDBThreadPoolFactory.newFixedThreadPool(threadCnt, ThreadName.FLUSH.getName());
     }
 
     LOGGER.info("Flush task manager started.");

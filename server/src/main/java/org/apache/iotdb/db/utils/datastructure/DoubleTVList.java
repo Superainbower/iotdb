@@ -20,69 +20,48 @@ package org.apache.iotdb.db.utils.datastructure;
 
 import org.apache.iotdb.db.rescon.PrimitiveArrayManager;
 import org.apache.iotdb.db.utils.MathUtils;
+import org.apache.iotdb.db.wal.buffer.IWALByteBufferView;
+import org.apache.iotdb.db.wal.utils.WALWriteUtils;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
 import org.apache.iotdb.tsfile.read.TimeValuePair;
+import org.apache.iotdb.tsfile.read.common.TimeRange;
+import org.apache.iotdb.tsfile.read.common.block.TsBlockBuilder;
 import org.apache.iotdb.tsfile.utils.BitMap;
 import org.apache.iotdb.tsfile.utils.TsPrimitiveType;
 
+import java.io.DataInputStream;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.apache.iotdb.db.rescon.PrimitiveArrayManager.ARRAY_SIZE;
+import static org.apache.iotdb.db.rescon.PrimitiveArrayManager.TVLIST_SORT_ALGORITHM;
 
-public class DoubleTVList extends TVList {
-
+public abstract class DoubleTVList extends TVList {
   // list of primitive array, add 1 when expanded -> double primitive array
   // index relation: arrayIndex -> elementIndex
-  private List<double[]> values;
-
-  private double[][] sortedValues;
-
-  private double pivotValue;
+  protected List<double[]> values;
 
   DoubleTVList() {
     super();
     values = new ArrayList<>();
   }
 
-  @Override
-  public void putDouble(long timestamp, double value) {
-    checkExpansion();
-    int arrayIndex = size / ARRAY_SIZE;
-    int elementIndex = size % ARRAY_SIZE;
-    minTime = Math.min(minTime, timestamp);
-    timestamps.get(arrayIndex)[elementIndex] = timestamp;
-    values.get(arrayIndex)[elementIndex] = value;
-    size++;
-    if (sorted && size > 1 && timestamp < getTime(size - 2)) {
-      sorted = false;
+  public static DoubleTVList newList() {
+    switch (TVLIST_SORT_ALGORITHM) {
+      case QUICK:
+        return new QuickDoubleTVList();
+      case BACKWARD:
+        return new BackDoubleTVList();
+      default:
+        return new TimDoubleTVList();
     }
-  }
-
-  @Override
-  public double getDouble(int index) {
-    if (index >= size) {
-      throw new ArrayIndexOutOfBoundsException(index);
-    }
-    int arrayIndex = index / ARRAY_SIZE;
-    int elementIndex = index % ARRAY_SIZE;
-    return values.get(arrayIndex)[elementIndex];
-  }
-
-  protected void set(int index, long timestamp, double value) {
-    if (index >= size) {
-      throw new ArrayIndexOutOfBoundsException(index);
-    }
-    int arrayIndex = index / ARRAY_SIZE;
-    int elementIndex = index % ARRAY_SIZE;
-    timestamps.get(arrayIndex)[elementIndex] = timestamp;
-    values.get(arrayIndex)[elementIndex] = value;
   }
 
   @Override
   public DoubleTVList clone() {
-    DoubleTVList cloneList = new DoubleTVList();
+    DoubleTVList cloneList = DoubleTVList.newList();
     cloneAs(cloneList);
     for (double[] valueArray : values) {
       cloneList.values.add(cloneValue(valueArray));
@@ -97,19 +76,37 @@ public class DoubleTVList extends TVList {
   }
 
   @Override
-  public void sort() {
-    if (sortedTimestamps == null || sortedTimestamps.length < size) {
-      sortedTimestamps =
-          (long[][]) PrimitiveArrayManager.createDataListsByType(TSDataType.INT64, size);
+  public void putDouble(long timestamp, double value) {
+    checkExpansion();
+    int arrayIndex = rowCount / ARRAY_SIZE;
+    int elementIndex = rowCount % ARRAY_SIZE;
+    maxTime = Math.max(maxTime, timestamp);
+    timestamps.get(arrayIndex)[elementIndex] = timestamp;
+    values.get(arrayIndex)[elementIndex] = value;
+    rowCount++;
+    if (sorted && rowCount > 1 && timestamp < getTime(rowCount - 2)) {
+      sorted = false;
     }
-    if (sortedValues == null || sortedValues.length < size) {
-      sortedValues =
-          (double[][]) PrimitiveArrayManager.createDataListsByType(TSDataType.DOUBLE, size);
+  }
+
+  @Override
+  public double getDouble(int index) {
+    if (index >= rowCount) {
+      throw new ArrayIndexOutOfBoundsException(index);
     }
-    sort(0, size);
-    clearSortedValue();
-    clearSortedTime();
-    sorted = true;
+    int arrayIndex = index / ARRAY_SIZE;
+    int elementIndex = index % ARRAY_SIZE;
+    return values.get(arrayIndex)[elementIndex];
+  }
+
+  protected void set(int index, long timestamp, double value) {
+    if (index >= rowCount) {
+      throw new ArrayIndexOutOfBoundsException(index);
+    }
+    int arrayIndex = index / ARRAY_SIZE;
+    int elementIndex = index % ARRAY_SIZE;
+    timestamps.get(arrayIndex)[elementIndex] = timestamp;
+    values.get(arrayIndex)[elementIndex] = value;
   }
 
   @Override
@@ -123,60 +120,8 @@ public class DoubleTVList extends TVList {
   }
 
   @Override
-  void clearSortedValue() {
-    if (sortedValues != null) {
-      sortedValues = null;
-    }
-  }
-
-  @Override
-  protected void setFromSorted(int src, int dest) {
-    set(
-        dest,
-        sortedTimestamps[src / ARRAY_SIZE][src % ARRAY_SIZE],
-        sortedValues[src / ARRAY_SIZE][src % ARRAY_SIZE]);
-  }
-
-  @Override
-  protected void set(int src, int dest) {
-    long srcT = getTime(src);
-    double srcV = getDouble(src);
-    set(dest, srcT, srcV);
-  }
-
-  @Override
-  protected void setToSorted(int src, int dest) {
-    sortedTimestamps[dest / ARRAY_SIZE][dest % ARRAY_SIZE] = getTime(src);
-    sortedValues[dest / ARRAY_SIZE][dest % ARRAY_SIZE] = getDouble(src);
-  }
-
-  @Override
-  protected void reverseRange(int lo, int hi) {
-    hi--;
-    while (lo < hi) {
-      long loT = getTime(lo);
-      double loV = getDouble(lo);
-      long hiT = getTime(hi);
-      double hiV = getDouble(hi);
-      set(lo++, hiT, hiV);
-      set(hi--, loT, loV);
-    }
-  }
-
-  @Override
   protected void expandValues() {
     values.add((double[]) getPrimitiveArraysByType(TSDataType.DOUBLE));
-  }
-
-  @Override
-  protected void saveAsPivot(int pos) {
-    pivotTime = getTime(pos);
-    pivotValue = getDouble(pos);
-  }
-
-  @Override
-  protected void setPivotTo(int pos) {
-    set(pos, pivotTime, pivotValue);
   }
 
   @Override
@@ -193,6 +138,25 @@ public class DoubleTVList extends TVList {
       value = MathUtils.roundWithGivenPrecision(value, floatPrecision);
     }
     return new TimeValuePair(time, TsPrimitiveType.getByType(TSDataType.DOUBLE, value));
+  }
+
+  @Override
+  protected void writeValidValuesIntoTsBlock(
+      TsBlockBuilder builder,
+      int floatPrecision,
+      TSEncoding encoding,
+      List<TimeRange> deletionList) {
+    Integer deleteCursor = 0;
+    for (int i = 0; i < rowCount; i++) {
+      if (!isPointDeleted(getTime(i), deletionList, deleteCursor)
+          && (i == rowCount - 1 || getTime(i) != getTime(i + 1))) {
+        builder.getTimeColumnBuilder().writeLong(getTime(i));
+        builder
+            .getColumnBuilder(0)
+            .writeDouble(roundValueWithGivenPrecision(getDouble(i), floatPrecision, encoding));
+        builder.declarePosition();
+      }
+    }
   }
 
   @Override
@@ -215,23 +179,23 @@ public class DoubleTVList extends TVList {
       timeIdxOffset = start;
       // drop null at the end of value array
       int nullCnt =
-          dropNullValThenUpdateMinTimeAndSorted(time, value, bitMap, start, end, timeIdxOffset);
+          dropNullValThenUpdateMaxTimeAndSorted(time, value, bitMap, start, end, timeIdxOffset);
       end -= nullCnt;
     } else {
-      updateMinTimeAndSorted(time, start, end);
+      updateMaxTimeAndSorted(time, start, end);
     }
 
     while (idx < end) {
       int inputRemaining = end - idx;
-      int arrayIdx = size / ARRAY_SIZE;
-      int elementIdx = size % ARRAY_SIZE;
+      int arrayIdx = rowCount / ARRAY_SIZE;
+      int elementIdx = rowCount % ARRAY_SIZE;
       int internalRemaining = ARRAY_SIZE - elementIdx;
       if (internalRemaining >= inputRemaining) {
         // the remaining inputs can fit the last array, copy all remaining inputs into last array
         System.arraycopy(
             time, idx - timeIdxOffset, timestamps.get(arrayIdx), elementIdx, inputRemaining);
         System.arraycopy(value, idx, values.get(arrayIdx), elementIdx, inputRemaining);
-        size += inputRemaining;
+        rowCount += inputRemaining;
         break;
       } else {
         // the remaining inputs cannot fit the last array, fill the last array and create a new
@@ -240,14 +204,14 @@ public class DoubleTVList extends TVList {
             time, idx - timeIdxOffset, timestamps.get(arrayIdx), elementIdx, internalRemaining);
         System.arraycopy(value, idx, values.get(arrayIdx), elementIdx, internalRemaining);
         idx += internalRemaining;
-        size += internalRemaining;
+        rowCount += internalRemaining;
         checkExpansion();
       }
     }
   }
 
   // move null values to the end of time array and value array, then return number of null values
-  int dropNullValThenUpdateMinTimeAndSorted(
+  int dropNullValThenUpdateMaxTimeAndSorted(
       long[] time, double[] values, BitMap bitMap, int start, int end, int tIdxOffset) {
     long inPutMinTime = Long.MAX_VALUE;
     boolean inputSorted = true;
@@ -264,20 +228,49 @@ public class DoubleTVList extends TVList {
         time[tIdx - nullCnt] = time[tIdx];
         values[vIdx - nullCnt] = values[vIdx];
       }
-      // update minTime and sorted
+      // update maxTime and sorted
       tIdx = tIdx - nullCnt;
       inPutMinTime = Math.min(inPutMinTime, time[tIdx]);
+      maxTime = Math.max(maxTime, time[tIdx]);
       if (inputSorted && tIdx > 0 && time[tIdx - 1] > time[tIdx]) {
         inputSorted = false;
       }
     }
-    minTime = Math.min(inPutMinTime, minTime);
-    sorted = sorted && inputSorted && (size == 0 || inPutMinTime >= getTime(size - 1));
+
+    sorted = sorted && inputSorted && (rowCount == 0 || inPutMinTime >= getTime(rowCount - 1));
     return nullCnt;
   }
 
   @Override
   public TSDataType getDataType() {
     return TSDataType.DOUBLE;
+  }
+
+  @Override
+  public int serializedSize() {
+    return Byte.BYTES + Integer.BYTES + rowCount * (Long.BYTES + Double.BYTES);
+  }
+
+  @Override
+  public void serializeToWAL(IWALByteBufferView buffer) {
+    WALWriteUtils.write(TSDataType.DOUBLE, buffer);
+    buffer.putInt(rowCount);
+    for (int rowIdx = 0; rowIdx < rowCount; ++rowIdx) {
+      buffer.putLong(getTime(rowIdx));
+      buffer.putDouble(getDouble(rowIdx));
+    }
+  }
+
+  public static DoubleTVList deserialize(DataInputStream stream) throws IOException {
+    DoubleTVList tvList = DoubleTVList.newList();
+    int rowCount = stream.readInt();
+    long[] times = new long[rowCount];
+    double[] values = new double[rowCount];
+    for (int rowIdx = 0; rowIdx < rowCount; ++rowIdx) {
+      times[rowIdx] = stream.readLong();
+      values[rowIdx] = stream.readDouble();
+    }
+    tvList.putDoubles(times, values, null, 0, rowCount);
+    return tvList;
   }
 }

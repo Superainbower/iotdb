@@ -57,7 +57,7 @@ import java.util.List;
 public class ReadInPartitionTest {
 
   private static final String FILE_PATH = TsFileGeneratorForTest.outputDataFile;
-  private static ReadOnlyTsFile roTsFile = null;
+  private static TsFileReader roTsFile = null;
   private ArrayList<TimeRange> d1s6timeRangeList = new ArrayList<>();
   private ArrayList<TimeRange> d2s1timeRangeList = new ArrayList<>();
   private ArrayList<long[]> d1chunkGroupMetaDataOffsetList = new ArrayList<>();
@@ -66,13 +66,13 @@ public class ReadInPartitionTest {
   public void before() throws IOException {
     TsFileGeneratorForTest.generateFile(10000, 1024, 100);
     TsFileSequenceReader reader = new TsFileSequenceReader(FILE_PATH);
-    roTsFile = new ReadOnlyTsFile(reader);
+    roTsFile = new TsFileReader(reader);
 
     // Because the size of the generated chunkGroupMetaData may differ under
     // different test environments,
     // we get metadata from the real-time generated TsFile instead of using a fixed
     // parameter setting.
-    List<ChunkMetadata> d1s6List = reader.getChunkMetadataList(new Path("d1", "s6"));
+    List<ChunkMetadata> d1s6List = reader.getChunkMetadataList(new Path("d1", "s6", true));
     for (ChunkMetadata chunkMetaData : d1s6List) {
       // get a series of [startTime, endTime] of d1.s6 from the chunkGroupMetaData of
       // d1
@@ -89,7 +89,7 @@ public class ReadInPartitionTest {
       d1chunkGroupMetaDataOffsetList.add(startEndOffsets);
     }
 
-    List<ChunkMetadata> d2s1List = reader.getChunkMetadataList(new Path("d2", "s1"));
+    List<ChunkMetadata> d2s1List = reader.getChunkMetadataList(new Path("d2", "s1", true));
     for (ChunkMetadata chunkMetaData : d2s1List) {
       d2s1timeRangeList.add(
           new TimeRange(chunkMetaData.getStartTime(), chunkMetaData.getEndTime()));
@@ -105,8 +105,8 @@ public class ReadInPartitionTest {
   @Test
   public void test0() throws IOException {
     ArrayList<Path> paths = new ArrayList<>();
-    paths.add(new Path("d1", "s6"));
-    paths.add(new Path("d2", "s1"));
+    paths.add(new Path("d1", "s6", true));
+    paths.add(new Path("d2", "s1", true));
     QueryExpression queryExpression = QueryExpression.create(paths, null);
 
     QueryDataSet queryDataSet = roTsFile.query(queryExpression, 0L, 0L);
@@ -121,8 +121,8 @@ public class ReadInPartitionTest {
   @Test
   public void test1() throws IOException, QueryFilterOptimizationException {
     ArrayList<Path> paths = new ArrayList<>();
-    paths.add(new Path("d1", "s6"));
-    paths.add(new Path("d2", "s1"));
+    paths.add(new Path("d1", "s6", true));
+    paths.add(new Path("d2", "s1", true));
     QueryExpression queryExpression = QueryExpression.create(paths, null);
 
     QueryDataSet queryDataSet =
@@ -156,8 +156,8 @@ public class ReadInPartitionTest {
   @Test
   public void test2() throws IOException, QueryFilterOptimizationException {
     ArrayList<Path> paths = new ArrayList<>();
-    paths.add(new Path("d1", "s6"));
-    paths.add(new Path("d2", "s1"));
+    paths.add(new Path("d1", "s6", true));
+    paths.add(new Path("d2", "s1", true));
     IExpression expression = new GlobalTimeExpression(TimeFilter.gt(50L));
     QueryExpression queryExpression = QueryExpression.create(paths, expression);
 
@@ -193,10 +193,10 @@ public class ReadInPartitionTest {
   @Test
   public void test3() throws IOException, QueryFilterOptimizationException {
     ArrayList<Path> paths = new ArrayList<>();
-    paths.add(new Path("d1", "s6"));
-    paths.add(new Path("d2", "s1"));
+    paths.add(new Path("d1", "s6", true));
+    paths.add(new Path("d2", "s1", true));
     Filter filter = ValueFilter.gt(10L);
-    IExpression expression = new SingleSeriesExpression(new Path("d1", "s3"), filter);
+    IExpression expression = new SingleSeriesExpression(new Path("d1", "s3", true), filter);
     QueryExpression queryExpression = QueryExpression.create(paths, expression);
 
     QueryDataSet queryDataSet =

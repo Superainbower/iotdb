@@ -19,22 +19,25 @@
 
 package org.apache.iotdb.tsfile.fileSystem.fileInputFactory;
 
+import org.apache.iotdb.tsfile.common.conf.TSFileDescriptor;
 import org.apache.iotdb.tsfile.read.reader.TsFileInput;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 
 public class HDFSInputFactory implements FileInputFactory {
 
   private static final Logger logger = LoggerFactory.getLogger(HDFSInputFactory.class);
-  private static Constructor constructor;
+  private Constructor constructor;
 
-  static {
+  public HDFSInputFactory() {
     try {
-      Class<?> clazz = Class.forName("org.apache.iotdb.hadoop.fileSystem.HDFSInput");
+      Class<?> clazz =
+          Class.forName(TSFileDescriptor.getInstance().getConfig().getHdfsTsFileInput());
       constructor = clazz.getConstructor(String.class);
     } catch (ClassNotFoundException | NoSuchMethodException e) {
       logger.error(
@@ -44,15 +47,15 @@ public class HDFSInputFactory implements FileInputFactory {
   }
 
   @Override
-  public TsFileInput getTsFileInput(String filePath) {
+  public TsFileInput getTsFileInput(String filePath) throws IOException {
     try {
       return (TsFileInput) constructor.newInstance(filePath);
     } catch (InstantiationException | InvocationTargetException | IllegalAccessException e) {
-      logger.error(
-          "Failed to get TsFile input of file: {}. Please check your dependency of Hadoop module.",
-          filePath,
+      throw new IOException(
+          String.format(
+              "Failed to get TsFile input of file: %s. Please check your dependency of Hadoop module.",
+              filePath),
           e);
-      return null;
     }
   }
 }

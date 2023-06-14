@@ -67,15 +67,11 @@ public interface IChunkMetadata {
 
   String getMeasurementUid();
 
-  void insertIntoSortedDeletions(long startTime, long endTime);
+  void insertIntoSortedDeletions(TimeRange timeRange);
 
   List<TimeRange> getDeleteIntervalList();
 
   int serializeTo(OutputStream outputStream, boolean serializeStatistic) throws IOException;
 
   byte getMask();
-
-  boolean isTimeColumn();
-
-  boolean isValueColumn();
 }

@@ -19,6 +19,7 @@
 package org.apache.iotdb.tsfile.read.filter;
 
 import org.apache.iotdb.tsfile.file.metadata.statistics.Statistics;
+import org.apache.iotdb.tsfile.read.common.TimeRange;
 import org.apache.iotdb.tsfile.read.filter.basic.Filter;
 import org.apache.iotdb.tsfile.read.filter.factory.FilterSerializeId;
 
@@ -26,6 +27,8 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 
 public class GroupByFilter implements Filter, Serializable {
@@ -48,6 +51,11 @@ public class GroupByFilter implements Filter, Serializable {
   @Override
   public boolean satisfy(Statistics statistics) {
     return satisfyStartEndTime(statistics.getStartTime(), statistics.getEndTime());
+  }
+
+  @Override
+  public boolean allSatisfy(Statistics statistics) {
+    return containStartEndTime(statistics.getStartTime(), statistics.getEndTime());
   }
 
   @Override
@@ -98,7 +106,8 @@ public class GroupByFilter implements Filter, Serializable {
 
   @Override
   public String toString() {
-    return "GroupByFilter{}";
+    return String.format(
+        "GroupByFilter{[%d, %d], %d, %d}", startTime, endTime, interval, slidingStep);
   }
 
   @Override
@@ -150,5 +159,17 @@ public class GroupByFilter implements Filter, Serializable {
 
   public long getEndTime() {
     return endTime;
+  }
+
+  @Override
+  public List<TimeRange> getTimeRanges() {
+    return startTime >= endTime
+        ? Collections.emptyList()
+        : Collections.singletonList(new TimeRange(startTime, endTime - 1));
+  }
+
+  @Override
+  public Filter reverse() {
+    throw new UnsupportedOperationException();
   }
 }

@@ -19,8 +19,9 @@
 
 parser grammar IoTDBSqlParser;
 
-options { tokenVocab=IoTDBSqlLexer; }
+options { tokenVocab=SqlLexer; }
 
+import IdentifierParser;
 
 /**
  * 1. Top Level Description
@@ -31,80 +32,363 @@ singleStatement
     ;
 
 statement
-    : ddlStatement | dmlStatement | dclStatement | utilityStatement
+    : ddlStatement | dmlStatement | dclStatement | utilityStatement | syncStatement
     ;
 
 ddlStatement
-    : setStorageGroup | createStorageGroup | createTimeseries
-    | createFunction | createTrigger | createContinuousQuery | createSnapshot
-    | alterTimeseries | deleteStorageGroup | deleteTimeseries | deletePartition
-    | dropFunction | dropTrigger | dropContinuousQuery
-    | setTTL | unsetTTL | startTrigger | stopTrigger
-    | showStorageGroup | showDevices | showTimeseries | showChildPaths | showChildNodes
-    | showFunctions | showTriggers | showContinuousQueries | showTTL | showAllTTL
-    | countStorageGroup | countDevices | countTimeseries | countNodes
+    // Database
+    : createDatabase | dropDatabase | dropPartition | alterDatabase | showDatabases | countDatabases
+    // Timeseries & Path
+    | createTimeseries | dropTimeseries | alterTimeseries
+    | showDevices | showTimeseries | showChildPaths | showChildNodes | countDevices | countTimeseries | countNodes
+    // Schema Template
+    | createSchemaTemplate | createTimeseriesUsingSchemaTemplate | dropSchemaTemplate | dropTimeseriesOfSchemaTemplate
+    | showSchemaTemplates | showNodesInSchemaTemplate | showPathsUsingSchemaTemplate | showPathsSetSchemaTemplate
+    | setSchemaTemplate | unsetSchemaTemplate
+    | alterSchemaTemplate
+    // TTL
+    | setTTL | unsetTTL | showTTL | showAllTTL
+    // Function
+    | createFunction | dropFunction | showFunctions
+    // Trigger
+    | createTrigger | dropTrigger | showTriggers | startTrigger | stopTrigger
+    // Pipe Plugin
+    | createPipePlugin | dropPipePlugin | showPipePlugins
+    // CQ
+    | createContinuousQuery | dropContinuousQuery | showContinuousQueries
+    // Cluster
+    | showVariables | showCluster | showRegions | showDataNodes | showConfigNodes
+    | getRegionId | getTimeSlotList | countTimeSlotList | getSeriesSlotList | migrateRegion
+    // ML Model
+    | createModel | dropModel | showModels | showTrails
+    // Quota
+    | setSpaceQuota | showSpaceQuota | setThrottleQuota | showThrottleQuota
+    // View
+    | createLogicalView | dropLogicalView | showLogicalView | renameLogicalView | alterLogicalView
     ;
 
 dmlStatement
-    : selectStatement | insertStatement | deleteStatement;
+    : selectStatement | insertStatement | deleteStatement
+    ;
 
 dclStatement
     : createUser | createRole | alterUser | grantUser | grantRole | grantRoleToUser
     | revokeUser |  revokeRole | revokeRoleFromUser | dropUser | dropRole
     | listUser | listRole | listPrivilegesUser | listPrivilegesRole
-    | listUserPrivileges | listRolePrivileges | listAllRoleOfUser | listAllUserOfRole
     ;
 
 utilityStatement
-    : merge | fullMerge | flush | clearCache | settle
-    | setSystemStatus | showVersion | showFlushInfo | showLockInfo | showMergeInfo
-    | showQueryProcesslist | killQuery | grantWatermarkEmbedding | revokeWatermarkEmbedding
-    | loadConfiguration | loadTimeseries | loadFile | removeFile | unloadFile;
+    : merge | fullMerge | flush | clearCache | settle | explain
+    | setSystemStatus | showVersion | showFlushInfo | showLockInfo | showQueryResource
+    | showQueries | killQuery | grantWatermarkEmbedding | revokeWatermarkEmbedding
+    | loadConfiguration | loadTimeseries | loadFile | removeFile | unloadFile
+    ;
 
+syncStatement
+    : createPipeSink | showPipeSinkType | showPipeSink | dropPipeSink
+    | createPipe | showPipe | stopPipe | startPipe | dropPipe
+    ;
 
 /**
  * 2. Data Definition Language (DDL)
  */
 
-// Create Storage Group
-setStorageGroup
-    : SET STORAGE GROUP TO prefixPath
+// Database =========================================================================================
+// ---- Create Database
+createDatabase
+    : SET STORAGE GROUP TO prefixPath databaseAttributesClause?
+    | CREATE (STORAGE GROUP | DATABASE) prefixPath databaseAttributesClause?
     ;
 
-createStorageGroup
-    : CREATE STORAGE GROUP prefixPath
+databaseAttributesClause
+    : WITH databaseAttributeClause (COMMA? databaseAttributeClause)*
     ;
 
-// Create Timeseries
+databaseAttributeClause
+    : databaseAttributeKey operator_eq INTEGER_LITERAL
+    ;
+
+databaseAttributeKey
+    : TTL
+    | SCHEMA_REPLICATION_FACTOR
+    | DATA_REPLICATION_FACTOR
+    | TIME_PARTITION_INTERVAL
+    | SCHEMA_REGION_GROUP_NUM
+    | DATA_REGION_GROUP_NUM
+    ;
+
+// ---- Drop Database
+dropDatabase
+    : (DELETE | DROP) (STORAGE GROUP | DATABASE) prefixPath (COMMA prefixPath)*
+    ;
+
+// ---- Drop Partition
+dropPartition
+    : (DELETE | DROP) PARTITION prefixPath INTEGER_LITERAL(COMMA INTEGER_LITERAL)*
+    ;
+
+// ---- Alter Database
+alterDatabase
+    : ALTER (STORAGE GROUP | DATABASE) prefixPath databaseAttributesClause
+    ;
+
+// ---- Show Databases
+showDatabases
+    : SHOW (STORAGE GROUP | DATABASES) DETAILS? prefixPath?
+    ;
+
+// ---- Count Databases
+countDatabases
+    : COUNT (STORAGE GROUP | DATABASES) prefixPath?
+    ;
+
+
+// Timeseries & Path ===============================================================================
+// ---- Create Timeseries
 createTimeseries
-    : CREATE TIMESERIES fullPath alias? WITH attributeClauses
+    : CREATE ALIGNED TIMESERIES fullPath alignedMeasurements? #createAlignedTimeseries
+    | CREATE TIMESERIES fullPath attributeClauses  #createNonAlignedTimeseries
     ;
 
-alias
-    : LR_BRACKET ID RR_BRACKET
+alignedMeasurements
+    : LR_BRACKET nodeNameWithoutWildcard attributeClauses
+    (COMMA nodeNameWithoutWildcard attributeClauses)* RR_BRACKET
     ;
 
-attributeClauses
-    : DATATYPE OPERATOR_EQ dataType=DATATYPE_VALUE
-    (COMMA ENCODING OPERATOR_EQ encoding=ENCODING_VALUE)?
-    (COMMA (COMPRESSOR | COMPRESSION) OPERATOR_EQ compressor=COMPRESSOR_VALUE)?
-    (COMMA propertyClause)*
-    tagClause?
-    attributeClause?
+// ---- Drop Timeseries
+dropTimeseries
+    : (DELETE | DROP) TIMESERIES prefixPath (COMMA prefixPath)*
     ;
 
-// Create Function
+// ---- Alter Timeseries
+alterTimeseries
+    : ALTER TIMESERIES fullPath alterClause
+    ;
+
+alterClause
+    : RENAME beforeName=attributeKey TO currentName=attributeKey
+    | SET attributePair (COMMA attributePair)*
+    | DROP attributeKey (COMMA attributeKey)*
+    | ADD TAGS attributePair (COMMA attributePair)*
+    | ADD ATTRIBUTES attributePair (COMMA attributePair)*
+    | UPSERT aliasClause? tagClause? attributeClause?
+    ;
+
+aliasClause
+    : ALIAS operator_eq alias
+    ;
+
+// ---- Show Devices
+showDevices
+    : SHOW DEVICES prefixPath? (WITH (STORAGE GROUP | DATABASE))? devicesWhereClause? rowPaginationClause?
+    ;
+
+// ---- Show Timeseries
+showTimeseries
+    : SHOW LATEST? TIMESERIES prefixPath? timeseriesWhereClause? rowPaginationClause?
+    ;
+
+// ---- Show Child Paths
+showChildPaths
+    : SHOW CHILD PATHS prefixPath?
+    ;
+
+// ---- Show Child Nodes
+showChildNodes
+    : SHOW CHILD NODES prefixPath?
+    ;
+
+// ---- Count Devices
+countDevices
+    : COUNT DEVICES prefixPath?
+    ;
+
+// ---- Count Timeseries
+countTimeseries
+    : COUNT TIMESERIES prefixPath? timeseriesWhereClause? (GROUP BY LEVEL operator_eq INTEGER_LITERAL)?
+    ;
+
+// ---- Count Nodes
+countNodes
+    : COUNT NODES prefixPath LEVEL operator_eq INTEGER_LITERAL
+    ;
+
+// ---- Timeseries Where Clause
+devicesWhereClause
+    : WHERE deviceContainsExpression
+    ;
+
+deviceContainsExpression
+    : DEVICE OPERATOR_CONTAINS value=STRING_LITERAL
+    ;
+
+// ---- Timeseries Where Clause
+timeseriesWhereClause
+    : WHERE (timeseriesContainsExpression | columnEqualsExpression | tagEqualsExpression | tagContainsExpression)
+    ;
+
+timeseriesContainsExpression
+    : TIMESERIES OPERATOR_CONTAINS value=STRING_LITERAL
+    ;
+
+columnEqualsExpression
+    : attributeKey operator_eq attributeValue
+    ;
+
+tagEqualsExpression
+    : TAGS LR_BRACKET key=attributeKey RR_BRACKET operator_eq value=attributeValue
+    ;
+
+tagContainsExpression
+    : TAGS LR_BRACKET name=attributeKey RR_BRACKET OPERATOR_CONTAINS value=STRING_LITERAL
+    ;
+
+
+// Schema Template ==================================================================================
+// ---- Create Schema Template
+createSchemaTemplate
+    : CREATE SCHEMA TEMPLATE templateName=identifier
+    ALIGNED? (LR_BRACKET templateMeasurementClause (COMMA templateMeasurementClause)* RR_BRACKET)?
+    ;
+
+templateMeasurementClause
+    : nodeNameWithoutWildcard attributeClauses
+    ;
+
+// ---- Create Timeseries Of Schema Template
+createTimeseriesUsingSchemaTemplate
+    : CREATE TIMESERIES (OF | USING) SCHEMA TEMPLATE ON prefixPath
+    ;
+
+// ---- Drop Schema Template
+dropSchemaTemplate
+    : DROP SCHEMA TEMPLATE templateName=identifier
+    ;
+
+// ---- Drop Timeseries of Schema Template
+dropTimeseriesOfSchemaTemplate
+    : ((DELETE | DROP) TIMESERIES OF | DEACTIVATE) SCHEMA TEMPLATE (templateName=identifier) ? FROM prefixPath (COMMA prefixPath)*
+    ;
+
+// ---- Show Schema Template
+showSchemaTemplates
+    : SHOW SCHEMA TEMPLATES
+    ;
+
+// ---- Show Measurements In Schema Template
+showNodesInSchemaTemplate
+    : SHOW NODES OPERATOR_IN SCHEMA TEMPLATE templateName=identifier
+    ;
+
+// ---- Show Paths Set Schema Template
+showPathsSetSchemaTemplate
+    : SHOW PATHS SET SCHEMA TEMPLATE templateName=identifier
+    ;
+
+// ---- Show Paths Using Schema Template
+showPathsUsingSchemaTemplate
+    : SHOW PATHS prefixPath? USING SCHEMA TEMPLATE templateName=identifier
+    ;
+
+// ---- Set Schema Template
+setSchemaTemplate
+    : SET SCHEMA TEMPLATE templateName=identifier TO prefixPath
+    ;
+
+// ---- Unset Schema Template
+unsetSchemaTemplate
+    : UNSET SCHEMA TEMPLATE templateName=identifier FROM prefixPath
+    ;
+
+alterSchemaTemplate
+    : ALTER SCHEMA TEMPLATE templateName=identifier ADD LR_BRACKET templateMeasurementClause (COMMA templateMeasurementClause)* RR_BRACKET
+    ;
+
+
+// TTL =============================================================================================
+// ---- Set TTL
+setTTL
+    : SET TTL TO path=prefixPath time=INTEGER_LITERAL
+    ;
+
+// ---- Unset TTL
+unsetTTL
+    : UNSET TTL TO path=prefixPath
+    ;
+
+// ---- Show TTL
+showTTL
+    : SHOW TTL ON prefixPath (COMMA prefixPath)*
+    ;
+
+// ---- Show All TTL
+showAllTTL
+    : SHOW ALL TTL
+    ;
+
+
+// Function =========================================================================================
+// ---- Create Function
 createFunction
-    : CREATE FUNCTION udfName=ID AS className=STRING_LITERAL
+    : CREATE FUNCTION udfName=identifier AS className=STRING_LITERAL uriClause?
     ;
 
-// Create Trigger
+uriClause
+    : USING URI uri
+    ;
+
+uri
+    : STRING_LITERAL
+    ;
+
+// ---- Drop Function
+dropFunction
+    : DROP FUNCTION udfName=identifier
+    ;
+
+// ---- Show Functions
+showFunctions
+    : SHOW FUNCTIONS
+    ;
+
+// Quota =========================================================================================
+// Show Space Quota
+showSpaceQuota
+    : SHOW SPACE QUOTA (prefixPath (COMMA prefixPath)*)?
+    ;
+
+// Set Space Quota
+setSpaceQuota
+    : SET SPACE QUOTA attributePair (COMMA attributePair)* ON prefixPath (COMMA prefixPath)*
+    ;
+
+// Set Throttle Quota
+setThrottleQuota
+    : SET THROTTLE QUOTA attributePair (COMMA attributePair)* ON userName=identifier
+    ;
+
+// Show Throttle Quota
+showThrottleQuota
+    : SHOW THROTTLE QUOTA (userName=identifier)?
+    ;
+
+// Trigger =========================================================================================
+// ---- Create Trigger
 createTrigger
-    : CREATE TRIGGER triggerName=ID triggerEventClause ON fullPath AS className=STRING_LITERAL triggerAttributeClause?
+    : CREATE triggerType? TRIGGER triggerName=identifier
+        triggerEventClause
+        ON prefixPath
+        AS className=STRING_LITERAL
+        uriClause?
+        triggerAttributeClause?
+    ;
+
+triggerType
+    : STATELESS | STATEFUL
     ;
 
 triggerEventClause
-    : (BEFORE | AFTER) INSERT
+    : (BEFORE | AFTER) (INSERT | DELETE)
     ;
 
 triggerAttributeClause
@@ -112,173 +396,204 @@ triggerAttributeClause
     ;
 
 triggerAttribute
-    : key=STRING_LITERAL OPERATOR_EQ value=STRING_LITERAL
+    : key=attributeKey operator_eq value=attributeValue
     ;
 
-// Create Continuous Query
-createContinuousQuery
-    : CREATE (CONTINUOUS QUERY | CQ) continuousQueryName=ID resampleClause? cqSelectIntoClause
-    ;
-
-cqSelectIntoClause
-    : BEGIN selectClause INTO intoPath fromClause cqGroupByTimeClause END
-    ;
-
-cqGroupByTimeClause
-    : GROUP BY TIME LR_BRACKET DURATION_LITERAL RR_BRACKET
-      (COMMA LEVEL OPERATOR_EQ INTEGER_LITERAL (COMMA INTEGER_LITERAL)*)?
-    ;
-
-resampleClause
-    : RESAMPLE (EVERY DURATION_LITERAL)? (FOR DURATION_LITERAL)?;
-
-// Create Snapshot for Schema
-createSnapshot
-    : CREATE SNAPSHOT FOR SCHEMA
-    ;
-
-// Alter Timeseries
-alterTimeseries
-    : ALTER TIMESERIES fullPath alterClause
-    ;
-
-alterClause
-    : RENAME beforeName=ID TO currentName=ID
-    | SET propertyClause (COMMA propertyClause)*
-    | DROP ID (COMMA ID)*
-    | ADD TAGS propertyClause (COMMA propertyClause)*
-    | ADD ATTRIBUTES propertyClause (COMMA propertyClause)*
-    | UPSERT aliasClause? tagClause? attributeClause?
-    ;
-
-aliasClause
-    : ALIAS OPERATOR_EQ ID
-    ;
-
-// Delete Storage Group
-deleteStorageGroup
-    : DELETE STORAGE GROUP prefixPath (COMMA prefixPath)*
-    ;
-
-// Delete Timeseries
-deleteTimeseries
-    : DELETE TIMESERIES prefixPath (COMMA prefixPath)*
-    ;
-
-// Delete Partition
-deletePartition
-    : DELETE PARTITION prefixPath INTEGER_LITERAL(COMMA INTEGER_LITERAL)*
-    ;
-
-// Drop Function
-dropFunction
-    : DROP FUNCTION udfName=ID
-    ;
-
-// Drop Trigger
+// ---- Drop Trigger
 dropTrigger
-    : DROP TRIGGER triggerName=ID
+    : DROP TRIGGER triggerName=identifier
     ;
 
-// Drop Continuous Query
-dropContinuousQuery
-    : DROP (CONTINUOUS QUERY|CQ) continuousQueryName=ID
-    ;
-
-// Set TTL
-setTTL
-    : SET TTL TO path=prefixPath time=INTEGER_LITERAL
-    ;
-
-// Unset TTL
-unsetTTL
-    : UNSET TTL TO path=prefixPath
-    ;
-
-// Start Trigger
-startTrigger
-    : START TRIGGER triggerName=ID
-    ;
-
-// Stop Trigger
-stopTrigger
-    : STOP TRIGGER triggerName=ID
-    ;
-
-// Show Storage Group
-showStorageGroup
-    : SHOW STORAGE GROUP prefixPath?
-    ;
-
-// Show Devices
-showDevices
-    : SHOW DEVICES prefixPath? (WITH STORAGE GROUP)? limitClause?
-    ;
-
-// Show Timeseries
-showTimeseries
-    : SHOW LATEST? TIMESERIES prefixPath? showWhereClause? limitClause?
-    ;
-
-showWhereClause
-    : WHERE (propertyClause | containsExpression)
-    ;
-
-// Show Child Paths
-showChildPaths
-    : SHOW CHILD PATHS prefixPath?
-    ;
-
-// Show Child Nodes
-showChildNodes
-    : SHOW CHILD NODES prefixPath?
-    ;
-
-// Show Functions
-showFunctions
-    : SHOW FUNCTIONS
-    ;
-
-// Show Triggers
+// ---- Show Triggers
 showTriggers
     : SHOW TRIGGERS
     ;
 
-// Show Continuous Queries
+// ---- Start Trigger
+startTrigger
+    : START TRIGGER triggerName=identifier
+    ;
+
+// ---- Stop Trigger
+stopTrigger
+    : STOP TRIGGER triggerName=identifier
+    ;
+
+
+// CQ ==============================================================================================
+// ---- Create Continuous Query
+createContinuousQuery
+    : CREATE (CONTINUOUS QUERY | CQ) cqId=identifier
+        resampleClause?
+        timeoutPolicyClause?
+        BEGIN
+            selectStatement
+        END
+    ;
+
+resampleClause
+    : RESAMPLE
+        (EVERY everyInterval=DURATION_LITERAL)?
+        (BOUNDARY boundaryTime=timeValue)?
+        (RANGE startTimeOffset=DURATION_LITERAL (COMMA endTimeOffset=DURATION_LITERAL)?)?
+    ;
+
+timeoutPolicyClause
+    : TIMEOUT POLICY (BLOCKED | DISCARD)
+    ;
+
+// ---- Drop Continuous Query
+dropContinuousQuery
+    : DROP (CONTINUOUS QUERY|CQ) cqId=identifier
+    ;
+
+// ---- Show Continuous Queries
 showContinuousQueries
     : SHOW (CONTINUOUS QUERIES | CQS)
     ;
 
-// Show TTL
-showTTL
-    : SHOW TTL ON prefixPath (COMMA prefixPath)*
+
+// Cluster =========================================================================================
+// ---- Show Variables
+showVariables
+    : SHOW VARIABLES
     ;
 
-// Show All TTL
-showAllTTL
-    : SHOW ALL TTL
+// ---- Show Cluster
+showCluster
+    : SHOW CLUSTER (DETAILS)?
     ;
 
-// Count Storage Group
-countStorageGroup
-    : COUNT STORAGE GROUP prefixPath?
+// ---- Show Regions
+showRegions
+    : SHOW (SCHEMA | DATA)? REGIONS (OF (STORAGE GROUP | DATABASE) prefixPath? (COMMA prefixPath)*)?
+        (ON NODEID INTEGER_LITERAL (COMMA INTEGER_LITERAL)*)?
     ;
 
-// Count Devices
-countDevices
-    : COUNT DEVICES prefixPath?
+// ---- Show Data Nodes
+showDataNodes
+    : SHOW DATANODES
     ;
 
-// Count Timeseries
-countTimeseries
-    : COUNT TIMESERIES prefixPath? (GROUP BY LEVEL OPERATOR_EQ INTEGER_LITERAL)?
+// ---- Show Config Nodes
+showConfigNodes
+    : SHOW CONFIGNODES
     ;
 
-// Count Nodes
-countNodes
-    : COUNT NODES prefixPath LEVEL OPERATOR_EQ INTEGER_LITERAL
+// ---- Get Region Id
+getRegionId
+    : SHOW (DATA|SCHEMA) REGIONID WHERE (DATABASE operator_eq database=prefixPath
+        |DEVICE operator_eq device=prefixPath)
+        (OPERATOR_AND (TIMESTAMP|TIME) operator_eq time = timeValue)?
     ;
 
+// ---- Get Time Slot List
+getTimeSlotList
+    : SHOW (TIMESLOTID|TIMEPARTITION) WHERE (DEVICE operator_eq device=prefixPath
+        | REGIONID operator_eq regionId=INTEGER_LITERAL
+        | DATABASE operator_eq database=prefixPath )
+        (OPERATOR_AND STARTTIME operator_eq startTime=timeValue)?
+        (OPERATOR_AND ENDTIME operator_eq endTime=timeValue)?
+    ;
+
+// ---- Count Time Slot List
+countTimeSlotList
+    : COUNT (TIMESLOTID|TIMEPARTITION) WHERE (DEVICE operator_eq device=prefixPath
+        | REGIONID operator_eq regionId=INTEGER_LITERAL
+        | DATABASE operator_eq database=prefixPath )
+        (OPERATOR_AND STARTTIME operator_eq startTime=INTEGER_LITERAL)?
+        (OPERATOR_AND ENDTIME operator_eq endTime=INTEGER_LITERAL)?
+    ;
+
+// ---- Get Series Slot List
+getSeriesSlotList
+    : SHOW (DATA|SCHEMA) SERIESSLOTID WHERE DATABASE operator_eq database=prefixPath
+    ;
+
+
+
+// ---- Migrate Region
+migrateRegion
+    : MIGRATE REGION regionId=INTEGER_LITERAL FROM fromId=INTEGER_LITERAL TO toId=INTEGER_LITERAL
+    ;
+
+// Pipe Plugin =========================================================================================
+// Create Pipe Plugin
+createPipePlugin
+    : CREATE PIPEPLUGIN pluginName=identifier AS className=STRING_LITERAL uriClause
+    ;
+
+// Drop Pipe Plugin
+dropPipePlugin
+    : DROP PIPEPLUGIN pluginName=identifier
+    ;
+
+// Show Pipe Plugins
+showPipePlugins
+    : SHOW PIPEPLUGINS
+    ;
+
+// ML Model =========================================================================================
+// ---- Create Model
+createModel
+    : CREATE AUTO? MODEL modelId=identifier
+        WITH attributePair (COMMA attributePair)*
+        BEGIN
+            selectStatement
+        END
+    ;
+
+// ---- Drop Model
+dropModel
+    : DROP MODEL modelId=identifier
+    ;
+
+// ---- Show Models
+showModels
+    : SHOW MODELS
+    ;
+
+// ---- Show Trails
+showTrails
+    : SHOW TRAILS modelId=identifier
+    ;
+
+// Create Logical View
+createLogicalView
+    : CREATE VIEW viewTargetPaths AS viewSourcePaths
+    ;
+
+showLogicalView
+    : SHOW VIEW prefixPath? timeseriesWhereClause? rowPaginationClause?
+    ;
+
+dropLogicalView
+    : (DELETE | DROP) VIEW prefixPath (COMMA prefixPath)*
+    ;
+
+renameLogicalView
+    : ALTER VIEW fullPath RENAME TO fullPath
+    ;
+
+alterLogicalView
+    : ALTER VIEW viewTargetPaths AS viewSourcePaths
+    | ALTER VIEW fullPath alterClause
+    ;
+
+viewSuffixPaths
+    : nodeNameWithoutWildcard (DOT nodeNameWithoutWildcard)*
+    ;
+
+viewTargetPaths
+    : fullPath (COMMA fullPath)*
+    | prefixPath LR_BRACKET viewSuffixPaths (COMMA viewSuffixPaths)* RR_BRACKET
+    ;
+
+viewSourcePaths
+    : fullPath (COMMA fullPath)*
+    | prefixPath LR_BRACKET viewSuffixPaths (COMMA viewSuffixPaths)* RR_BRACKET
+    | selectClause fromClause
+    ;
 
 /**
  * 3. Data Manipulation Language (DML)
@@ -286,116 +601,160 @@ countNodes
 
 // Select Statement
 selectStatement
-    : TRACING? selectClause intoClause? fromClause whereClause? specialClause?
+    : selectClause
+        intoClause?
+        fromClause
+        whereClause?
+        groupByClause?
+        havingClause?
+        orderByClause?
+        fillClause?
+        paginationClause?
+        alignByClause?
+    | selectClause
+        intoClause?
+        fromClause
+        whereClause?
+        groupByClause?
+        havingClause?
+        fillClause?
+        orderByClause?
+        paginationClause?
+        alignByClause?
     ;
 
+// ---- Select Clause
+selectClause
+    : SELECT LAST? resultColumn (COMMA resultColumn)*
+    ;
+
+resultColumn
+    : expression (AS alias)?
+    ;
+
+// ---- Into Clause
 intoClause
-    : INTO intoPath (COMMA intoPath)*
+    : INTO intoItem (COMMA intoItem)*
     ;
 
-intoPath
-    : fullPath
-    | nodeNameWithoutWildcard (DOT nodeNameWithoutWildcard)*
+intoItem
+    : ALIGNED? intoPath LR_BRACKET nodeNameInIntoPath (COMMA nodeNameInIntoPath)* RR_BRACKET
     ;
 
-specialClause
-    : specialLimit #specialLimitStatement
-    | orderByTimeClause specialLimit? #orderByTimeStatement
-    | groupByTimeClause orderByTimeClause? specialLimit? #groupByTimeStatement
-    | groupByFillClause orderByTimeClause? specialLimit? #groupByFillStatement
-    | groupByLevelClause orderByTimeClause? specialLimit? #groupByLevelStatement
-    | fillClause slimitClause? alignByDeviceClauseOrDisableAlign? #fillStatement
+// ---- From Clause
+fromClause
+    : FROM prefixPath (COMMA prefixPath)*
     ;
 
-specialLimit
-    : limitClause slimitClause? alignByDeviceClauseOrDisableAlign? #limitStatement
-    | slimitClause limitClause? alignByDeviceClauseOrDisableAlign? #slimitStatement
-    | withoutNullClause limitClause? slimitClause? alignByDeviceClauseOrDisableAlign? #withoutNullStatement
-    | alignByDeviceClauseOrDisableAlign #alignByDeviceClauseOrDisableAlignStatement
+// ---- Where Clause
+whereClause
+    : WHERE expression
     ;
 
-alignByDeviceClauseOrDisableAlign
-    : alignByDeviceClause
-    | disableAlign
+// ---- Group By Clause
+groupByClause
+    : GROUP BY groupByAttributeClause (COMMA groupByAttributeClause)*
     ;
 
-alignByDeviceClause
-    : ALIGN BY DEVICE
-    | GROUP BY DEVICE
+groupByAttributeClause
+    : TIME? LR_BRACKET (timeRange COMMA)? interval=DURATION_LITERAL (COMMA step=DURATION_LITERAL)? RR_BRACKET
+    | LEVEL operator_eq INTEGER_LITERAL (COMMA INTEGER_LITERAL)*
+    | TAGS LR_BRACKET identifier (COMMA identifier)* RR_BRACKET
+    | VARIATION LR_BRACKET expression (COMMA delta=number)? (COMMA attributePair)? RR_BRACKET
+    | CONDITION LR_BRACKET expression (COMMA expression)? (COMMA attributePair)? RR_BRACKET
+    | SESSION LR_BRACKET timeInterval=DURATION_LITERAL RR_BRACKET
+    | COUNT LR_BRACKET expression COMMA countNumber=INTEGER_LITERAL (COMMA attributePair)? RR_BRACKET
     ;
 
-disableAlign
-    : DISABLE ALIGN
+number
+    :INTEGER_LITERAL
+    |realLiteral
     ;
 
-orderByTimeClause
-    : ORDER BY TIME (DESC | ASC)?
-    ;
-
-groupByTimeClause
-    : GROUP BY LR_BRACKET timeInterval COMMA DURATION_LITERAL (COMMA DURATION_LITERAL)? RR_BRACKET
-    | GROUP BY LR_BRACKET timeInterval COMMA DURATION_LITERAL (COMMA DURATION_LITERAL)? RR_BRACKET
-    COMMA LEVEL OPERATOR_EQ INTEGER_LITERAL (COMMA INTEGER_LITERAL)*
-    ;
-
-groupByFillClause
-    : GROUP BY LR_BRACKET timeInterval COMMA DURATION_LITERAL (COMMA DURATION_LITERAL)? RR_BRACKET
-     FILL LR_BRACKET typeClause (COMMA typeClause)* RR_BRACKET
-    ;
-
-groupByLevelClause
-    : GROUP BY LEVEL OPERATOR_EQ INTEGER_LITERAL (COMMA INTEGER_LITERAL)*
-    ;
-
-fillClause
-    : FILL LR_BRACKET typeClause (COMMA typeClause)* RR_BRACKET
-    ;
-
-withoutNullClause
-    : WITHOUT NULL_LITERAL (ALL | ANY)
-    ;
-
-typeClause
-    : (dataType=DATATYPE_VALUE | ALL) LS_BRACKET linearClause RS_BRACKET
-    | (dataType=DATATYPE_VALUE | ALL) LS_BRACKET previousClause RS_BRACKET
-    | (dataType=DATATYPE_VALUE | ALL) LS_BRACKET specificValueClause RS_BRACKET
-    | (dataType=DATATYPE_VALUE | ALL) LS_BRACKET previousUntilLastClause RS_BRACKET
-    ;
-
-linearClause
-    : LINEAR (COMMA aheadDuration=DURATION_LITERAL COMMA behindDuration=DURATION_LITERAL)?
-    ;
-
-previousClause
-    : PREVIOUS (COMMA DURATION_LITERAL)?
-    ;
-
-specificValueClause
-    : constant?
-    ;
-
-previousUntilLastClause
-    : PREVIOUSUNTILLAST (COMMA DURATION_LITERAL)?
-    ;
-
-timeInterval
+timeRange
     : LS_BRACKET startTime=timeValue COMMA endTime=timeValue RR_BRACKET
     | LR_BRACKET startTime=timeValue COMMA endTime=timeValue RS_BRACKET
     ;
 
-timeValue
-    : datetimeLiteral
-    | dateExpression
-    | INTEGER_LITERAL
+// ---- Having Clause
+havingClause
+    : HAVING expression
     ;
+
+// ---- Order By Clause
+orderByClause
+    : ORDER BY orderByAttributeClause (COMMA orderByAttributeClause)*
+    ;
+
+orderByAttributeClause
+    : sortKey (DESC | ASC)?
+    | expression (DESC | ASC)? (NULLS (FIRST|LAST))?
+    ;
+
+sortKey
+    : TIME
+    | TIMESERIES
+    | DEVICE
+    | QUERYID
+    | DATANODEID
+    | ELAPSEDTIME
+    | STATEMENT
+    ;
+
+// ---- Fill Clause
+fillClause
+    : FILL LR_BRACKET (LINEAR | PREVIOUS | constant) RR_BRACKET
+    ;
+
+// ---- Pagination Clause
+paginationClause
+    : seriesPaginationClause rowPaginationClause?
+    | rowPaginationClause seriesPaginationClause?
+    ;
+
+rowPaginationClause
+    : limitClause
+    | offsetClause
+    | offsetClause limitClause
+    | limitClause offsetClause
+    ;
+
+seriesPaginationClause
+    : slimitClause
+    | soffsetClause
+    | soffsetClause slimitClause
+    | slimitClause soffsetClause
+    ;
+
+limitClause
+    : LIMIT rowLimit=INTEGER_LITERAL
+    ;
+
+offsetClause
+    : OFFSET rowOffset=INTEGER_LITERAL
+    ;
+
+slimitClause
+    : SLIMIT seriesLimit=INTEGER_LITERAL
+    ;
+
+soffsetClause
+    : SOFFSET seriesOffset=INTEGER_LITERAL
+    ;
+
+// ---- Align By Clause
+alignByClause
+    : ALIGN BY (TIME | DEVICE)
+    ;
+
 
 // Insert Statement
 insertStatement
-    : INSERT INTO prefixPath insertColumnsSpec VALUES insertValuesSpec
+    : INSERT INTO prefixPath insertColumnsSpec ALIGNED? VALUES insertValuesSpec
     ;
 
 insertColumnsSpec
-    : LR_BRACKET (TIMESTAMP|TIME)? (COMMA? measurementName)+ RR_BRACKET
+    : LR_BRACKET (TIMESTAMP|TIME)? (COMMA? nodeNameWithoutWildcard)+ RR_BRACKET
     ;
 
 insertValuesSpec
@@ -403,13 +762,8 @@ insertValuesSpec
     ;
 
 insertMultiValue
-    : LR_BRACKET datetimeLiteral (COMMA measurementValue)+ RR_BRACKET
-    | LR_BRACKET INTEGER_LITERAL (COMMA measurementValue)+ RR_BRACKET
+    : LR_BRACKET timeValue (COMMA measurementValue)+ RR_BRACKET
     | LR_BRACKET (measurementValue COMMA?)+ RR_BRACKET
-    ;
-
-measurementName
-    : nodeNameWithoutWildcard
     ;
 
 measurementValue
@@ -419,11 +773,7 @@ measurementValue
 
 // Delete Statement
 deleteStatement
-    : DELETE FROM prefixPath (COMMA prefixPath)* (whereClause)?
-    ;
-
-whereClause
-    : WHERE (orExpression | indexPredicateClause)
+    : DELETE FROM prefixPath (COMMA prefixPath)* whereClause?
     ;
 
 /**
@@ -432,12 +782,12 @@ whereClause
 
 // Create User
 createUser
-    : CREATE USER userName=ID password=STRING_LITERAL
+    : CREATE USER userName=identifier password=STRING_LITERAL
     ;
 
 // Create Role
 createRole
-    : CREATE ROLE roleName=ID
+    : CREATE ROLE roleName=identifier
     ;
 
 // Alter Password
@@ -447,82 +797,62 @@ alterUser
 
 // Grant User Privileges
 grantUser
-    : GRANT USER userName=ID PRIVILEGES privileges ON prefixPath
+    : GRANT USER userName=identifier PRIVILEGES privileges (ON prefixPath (COMMA prefixPath)*)?
     ;
 
 // Grant Role Privileges
 grantRole
-    : GRANT ROLE roleName=ID PRIVILEGES privileges ON prefixPath
+    : GRANT ROLE roleName=identifier PRIVILEGES privileges (ON prefixPath (COMMA prefixPath)*)?
     ;
 
 // Grant User Role
 grantRoleToUser
-    : GRANT roleName=ID TO userName=ID
+    : GRANT roleName=identifier TO userName=identifier
     ;
 
 // Revoke User Privileges
 revokeUser
-    : REVOKE USER userName=ID PRIVILEGES privileges ON prefixPath
+    : REVOKE USER userName=identifier PRIVILEGES privileges (ON prefixPath (COMMA prefixPath)*)?
     ;
 
 // Revoke Role Privileges
 revokeRole
-    : REVOKE ROLE roleName=ID PRIVILEGES privileges ON prefixPath
+    : REVOKE ROLE roleName=identifier PRIVILEGES privileges (ON prefixPath (COMMA prefixPath)*)?
     ;
 
 // Revoke Role From User
 revokeRoleFromUser
-    : REVOKE roleName=ID FROM userName=ID
+    : REVOKE roleName=identifier FROM userName=identifier
     ;
 
 // Drop User
 dropUser
-    : DROP USER userName=ID
+    : DROP USER userName=identifier
     ;
 
 // Drop Role
 dropRole
-    : DROP ROLE roleName=ID
+    : DROP ROLE roleName=identifier
     ;
 
 // List Users
 listUser
-    : LIST USER
+    : LIST USER (OF ROLE roleName=identifier)?
     ;
 
 // List Roles
 listRole
-    : LIST ROLE
+    : LIST ROLE (OF USER userName=usernameWithRoot)?
     ;
 
-// List Privileges
+// List Privileges of Users On Specific Path
 listPrivilegesUser
-    : LIST PRIVILEGES USER userName=usernameWithRoot ON prefixPath
+    : LIST PRIVILEGES USER userName=usernameWithRoot (ON prefixPath (COMMA prefixPath)*)?
     ;
 
 // List Privileges of Roles On Specific Path
 listPrivilegesRole
-    : LIST PRIVILEGES ROLE roleName=ID ON prefixPath
-    ;
-
-// List Privileges of Users
-listUserPrivileges
-    : LIST USER PRIVILEGES userName=usernameWithRoot
-    ;
-
-// List Privileges of Roles
-listRolePrivileges
-    : LIST ROLE PRIVILEGES roleName=ID
-    ;
-
-// List Roles of Users
-listAllRoleOfUser
-    : LIST ALL ROLE OF USER userName=usernameWithRoot
-    ;
-
-// List Users of Role
-listAllUserOfRole
-    : LIST ALL USER OF ROLE roleName=ID
+    : LIST PRIVILEGES ROLE roleName=identifier (ON prefixPath (COMMA prefixPath)*)?
     ;
 
 privileges
@@ -536,7 +866,7 @@ privilegeValue
 
 usernameWithRoot
     : ROOT
-    | ID
+    | identifier
     ;
 
 
@@ -546,22 +876,22 @@ usernameWithRoot
 
 // Merge
 merge
-    : MERGE
+    : MERGE (ON (LOCAL | CLUSTER))?
     ;
 
 // Full Merge
 fullMerge
-    : FULL MERGE
+    : FULL MERGE (ON (LOCAL | CLUSTER))?
     ;
 
 // Flush
 flush
-    : FLUSH prefixPath? (COMMA prefixPath)* BOOLEAN_LITERAL?
+    : FLUSH prefixPath? (COMMA prefixPath)* BOOLEAN_LITERAL? (ON (LOCAL | CLUSTER))?
     ;
 
 // Clear Cache
 clearCache
-    : CLEAR CACHE
+    : CLEAR CACHE (ON (LOCAL | CLUSTER))?
     ;
 
 // Settle
@@ -569,9 +899,14 @@ settle
     : SETTLE (prefixPath|tsFilePath=STRING_LITERAL)
     ;
 
-// Set System To ReadOnly/Writable
+// Explain
+explain
+    : EXPLAIN selectStatement
+    ;
+
+// Set System To readonly/running/error
 setSystemStatus
-    : SET SYSTEM TO (READONLY|WRITABLE)
+    : SET SYSTEM TO (READONLY|RUNNING) (ON (LOCAL | CLUSTER))?
     ;
 
 // Show Version
@@ -589,19 +924,23 @@ showLockInfo
     : SHOW LOCK INFO prefixPath
     ;
 
-// Show Merge Info
-showMergeInfo
-    : SHOW MERGE INFO
+
+// Show Query Resource
+showQueryResource
+    : SHOW QUERY RESOURCE
     ;
 
-// Show Query Processlist
-showQueryProcesslist
-    : SHOW QUERY PROCESSLIST
+// Show Queries / Show Query Processlist
+showQueries
+    : SHOW (QUERIES | QUERY PROCESSLIST)
+    whereClause?
+    orderByClause?
+    rowPaginationClause?
     ;
 
 // Kill Query
 killQuery
-    : KILL QUERY INTEGER_LITERAL?
+    : KILL (QUERY queryId=STRING_LITERAL | ALL QUERIES)
     ;
 
 // Grant Watermark Embedding
@@ -616,7 +955,7 @@ revokeWatermarkEmbedding
 
 // Load Configuration
 loadConfiguration
-    : LOAD CONFIGURATION (MINUS GLOBAL)?
+    : LOAD CONFIGURATION (MINUS GLOBAL)? (ON (LOCAL | CLUSTER))?
     ;
 
 // Load Timeseries
@@ -626,13 +965,17 @@ loadTimeseries
 
 // Load TsFile
 loadFile
-    : LOAD fileName=STRING_LITERAL loadFilesClause?
+    : LOAD fileName=STRING_LITERAL loadFileAttributeClauses?
     ;
 
-loadFilesClause
-    : AUTOREGISTER OPERATOR_EQ BOOLEAN_LITERAL (COMMA loadFilesClause)?
-    | SGLEVEL OPERATOR_EQ INTEGER_LITERAL (COMMA loadFilesClause)?
-    | VERIFY OPERATOR_EQ BOOLEAN_LITERAL (COMMA loadFilesClause)?
+loadFileAttributeClauses
+    : loadFileAttributeClause (COMMA? loadFileAttributeClause)*
+    ;
+
+loadFileAttributeClause
+    : SGLEVEL operator_eq INTEGER_LITERAL
+    | VERIFY operator_eq BOOLEAN_LITERAL
+    | ONSUCCESS operator_eq (DELETE|NONE)
     ;
 
 // Remove TsFile
@@ -645,9 +988,80 @@ unloadFile
     : UNLOAD srcFileName=STRING_LITERAL dstFileDir=STRING_LITERAL
     ;
 
+/**
+ * 6. syncStatement
+ */
+
+// pipesink statement
+createPipeSink
+    : CREATE PIPESINK pipeSinkName=identifier AS pipeSinkType=identifier (LR_BRACKET syncAttributeClauses RR_BRACKET)?
+    ;
+
+showPipeSinkType
+    : SHOW PIPESINKTYPE
+    ;
+
+showPipeSink
+    : SHOW ((PIPESINK (pipeSinkName=identifier)?) | PIPESINKS)
+    ;
+
+dropPipeSink
+    : DROP PIPESINK pipeSinkName=identifier
+    ;
+
+// pipe statement
+createPipe
+    : CREATE PIPE pipeName=identifier collectorAttributesClause? processorAttributesClause? connectorAttributesClause
+    ;
+
+showPipe
+    : SHOW ((PIPE pipeName=identifier) | PIPES (WHERE CONNECTOR USED BY pipeName=identifier)?)
+    ;
+
+collectorAttributesClause
+    : WITH COLLECTOR LR_BRACKET (collectorAttributeClause COMMA)* collectorAttributeClause? RR_BRACKET
+    ;
+
+collectorAttributeClause
+    : collectorKey=STRING_LITERAL OPERATOR_SEQ collectorValue=STRING_LITERAL
+    ;
+
+processorAttributesClause
+    : WITH PROCESSOR LR_BRACKET (processorAttributeClause COMMA)* processorAttributeClause? RR_BRACKET
+    ;
+
+processorAttributeClause
+    : processorKey=STRING_LITERAL OPERATOR_SEQ processorValue=STRING_LITERAL
+    ;
+
+connectorAttributesClause
+    : WITH CONNECTOR LR_BRACKET (connectorAttributeClause COMMA)* connectorAttributeClause? RR_BRACKET
+    ;
+
+connectorAttributeClause
+    : connectorKey=STRING_LITERAL OPERATOR_SEQ connectorValue=STRING_LITERAL
+    ;
+
+stopPipe
+    : STOP PIPE pipeName=identifier
+    ;
+
+startPipe
+    : START PIPE pipeName=identifier
+    ;
+
+dropPipe
+    : DROP PIPE pipeName=identifier
+    ;
+
+// attribute clauses
+syncAttributeClauses
+    : attributePair (COMMA? attributePair)*
+    ;
+
 
 /**
- * 6. Common Clauses
+ * 7. Common Clauses
  */
 
 // IoTDB Objects
@@ -656,21 +1070,39 @@ fullPath
     : ROOT (DOT nodeNameWithoutWildcard)*
     ;
 
+fullPathInExpression
+    : ROOT (DOT nodeName)*
+    | nodeName (DOT nodeName)*
+    ;
+
 prefixPath
     : ROOT (DOT nodeName)*
     ;
 
-suffixPath
-    : nodeName (DOT nodeName)*
+intoPath
+    : ROOT (DOT nodeNameInIntoPath)* #fullPathInIntoPath
+    | nodeNameInIntoPath (DOT nodeNameInIntoPath)* #suffixPathInIntoPath
     ;
 
 nodeName
-    : wildcard? ID wildcard?
-    | wildcard
+    : wildcard
+    | wildcard nodeNameSlice wildcard?
+    | nodeNameSlice wildcard
+    | nodeNameWithoutWildcard
     ;
 
 nodeNameWithoutWildcard
-    : ID
+    : identifier
+    ;
+
+nodeNameSlice
+    : identifier
+    | INTEGER_LITERAL
+    ;
+
+nodeNameInIntoPath
+    : nodeNameWithoutWildcard
+    | DOUBLE_COLON
     ;
 
 wildcard
@@ -683,8 +1115,8 @@ wildcard
 
 constant
     : dateExpression
-    | (MINUS|PLUS)? realLiteral
-    | (MINUS|PLUS)? INTEGER_LITERAL
+    | (MINUS|PLUS|DIV)? realLiteral
+    | (MINUS|PLUS|DIV)? INTEGER_LITERAL
     | STRING_LITERAL
     | BOOLEAN_LITERAL
     | NULL_LITERAL
@@ -702,6 +1134,11 @@ realLiteral
     | EXPONENT_NUM_PART
     ;
 
+timeValue
+    : datetimeLiteral
+    | dateExpression
+    | (PLUS | MINUS)? INTEGER_LITERAL
+    ;
 
 // Expression & Predicate
 
@@ -713,126 +1150,99 @@ dateExpression
 // multiplication, division, and modulus higher than that of addition and substraction.
 expression
     : LR_BRACKET unaryInBracket=expression RR_BRACKET
-    | (PLUS | MINUS) unaryAfterSign=expression
+    | constant
+    | time=(TIME | TIMESTAMP)
+    | fullPathInExpression
+    | scalarFunctionExpression
+    | functionName LR_BRACKET expression (COMMA expression)* RR_BRACKET
+    | caseWhenThenExpression
+    | (PLUS | MINUS | OPERATOR_NOT) expressionAfterUnaryOperator=expression
     | leftExpression=expression (STAR | DIV | MOD) rightExpression=expression
     | leftExpression=expression (PLUS | MINUS) rightExpression=expression
-    | functionName LR_BRACKET expression (COMMA expression)* functionAttribute* RR_BRACKET
-    | suffixPath
-    | constant
+    | leftExpression=expression (OPERATOR_GT | OPERATOR_GTE | OPERATOR_LT | OPERATOR_LTE | OPERATOR_SEQ | OPERATOR_DEQ | OPERATOR_NEQ) rightExpression=expression
+    | unaryBeforeRegularOrLikeExpression=expression OPERATOR_NOT? (REGEXP | LIKE) STRING_LITERAL
+    | firstExpression=expression OPERATOR_NOT? OPERATOR_BETWEEN secondExpression=expression OPERATOR_AND thirdExpression=expression
+    | unaryBeforeIsNullExpression=expression OPERATOR_IS OPERATOR_NOT? NULL_LITERAL
+    | unaryBeforeInExpression=expression OPERATOR_NOT? (OPERATOR_IN | OPERATOR_CONTAINS) LR_BRACKET constant (COMMA constant)* RR_BRACKET
+    | leftExpression=expression OPERATOR_AND rightExpression=expression
+    | leftExpression=expression OPERATOR_OR rightExpression=expression
+    ;
+
+caseWhenThenExpression
+    : CASE caseExpression=expression? whenThenExpression+ (ELSE elseExpression=expression)? END
+    ;
+
+whenThenExpression
+    : WHEN whenExpression=expression THEN thenExpression=expression
     ;
 
 functionName
-    : ID
+    : identifier
     | COUNT
     ;
 
-functionAttribute
-    : COMMA functionAttributeKey=STRING_LITERAL OPERATOR_EQ functionAttributeValue=STRING_LITERAL
+scalarFunctionExpression
+    : CAST LR_BRACKET castInput=expression AS attributeValue RR_BRACKET
+    | REPLACE LR_BRACKET text=expression COMMA from=STRING_LITERAL COMMA to=STRING_LITERAL RR_BRACKET
+    | SUBSTRING subStringExpression
+    | ROUND LR_BRACKET input=expression (COMMA places=constant)? RR_BRACKET
     ;
 
-containsExpression
-    : name=ID OPERATOR_CONTAINS value=propertyValue
+operator_eq
+    : OPERATOR_SEQ
+    | OPERATOR_DEQ
     ;
 
-orExpression
-    : andExpression (OPERATOR_OR andExpression)*
+// Attribute Clause
+
+attributeClauses
+    : aliasNodeName? WITH attributeKey operator_eq dataType=attributeValue
+    (COMMA? attributePair)*
+    tagClause?
+    attributeClause?
+    // Simplified version (supported since v0.13)
+    | aliasNodeName? WITH? (attributeKey operator_eq)? dataType=attributeValue
+    attributePair*
+    tagClause?
+    attributeClause?
     ;
 
-andExpression
-    : predicate (OPERATOR_AND predicate)*
+aliasNodeName
+    : LR_BRACKET nodeName RR_BRACKET
     ;
-
-predicate
-    : (TIME | TIMESTAMP | suffixPath | fullPath) comparisonOperator constant
-    | (TIME | TIMESTAMP | suffixPath | fullPath) inClause
-    | OPERATOR_NOT? LR_BRACKET orExpression RR_BRACKET
-    | (suffixPath | fullPath) (REGEXP | LIKE) STRING_LITERAL
-    ;
-
-comparisonOperator
-    : type = OPERATOR_GT
-    | type = OPERATOR_GTE
-    | type = OPERATOR_LT
-    | type = OPERATOR_LTE
-    | type = OPERATOR_EQ
-    | type = OPERATOR_NEQ
-    ;
-
-inClause
-    : OPERATOR_NOT? OPERATOR_IN LR_BRACKET constant (COMMA constant)* RR_BRACKET
-    ;
-
-indexPredicateClause
-    : (suffixPath | fullPath) LIKE sequenceClause
-    | (suffixPath | fullPath) CONTAIN sequenceClause
-    WITH TOLERANCE constant (CONCAT sequenceClause WITH TOLERANCE constant)*
-    ;
-
-sequenceClause
-    : LR_BRACKET constant (COMMA constant)* RR_BRACKET
-    ;
-
-
-// Select Clause
-
-selectClause
-    : SELECT (LAST | topClause)? resultColumn (COMMA resultColumn)*
-    ;
-
-topClause
-    : TOP INTEGER_LITERAL
-    ;
-
-resultColumn
-    : expression (AS ID)?
-    ;
-
-
-// From Clause
-
-fromClause
-    : FROM prefixPath (COMMA prefixPath)*
-    ;
-
-
-// Tag & Property Clause
 
 tagClause
-    : TAGS LR_BRACKET propertyClause (COMMA propertyClause)* RR_BRACKET
-    ;
-
-propertyClause
-    : name=ID OPERATOR_EQ value=propertyValue
-    ;
-
-propertyValue
-    : INTEGER_LITERAL
-    | ID
-    | STRING_LITERAL
-    | constant
+    : TAGS LR_BRACKET attributePair (COMMA attributePair)* RR_BRACKET
     ;
 
 attributeClause
-    : ATTRIBUTES LR_BRACKET propertyClause (COMMA propertyClause)* RR_BRACKET
+    : ATTRIBUTES LR_BRACKET attributePair (COMMA attributePair)* RR_BRACKET
     ;
 
-
-// Limit & Offset Clause
-
-limitClause
-    : LIMIT INTEGER_LITERAL offsetClause?
-    | offsetClause? LIMIT INTEGER_LITERAL
+attributePair
+    : key=attributeKey operator_eq value=attributeValue
     ;
 
-offsetClause
-    : OFFSET INTEGER_LITERAL
+attributeKey
+    : identifier
+    | constant
     ;
 
-slimitClause
-    : SLIMIT INTEGER_LITERAL soffsetClause?
-    | soffsetClause? SLIMIT INTEGER_LITERAL
+attributeValue
+    : identifier
+    | constant
     ;
 
-soffsetClause
-    : SOFFSET INTEGER_LITERAL
+alias
+    : constant
+    | identifier
+    ;
+
+subStringExpression
+    : LR_BRACKET input=expression COMMA startPosition=signedIntegerLiteral (COMMA length=signedIntegerLiteral)? RR_BRACKET
+    | LR_BRACKET input=expression FROM from=signedIntegerLiteral (FOR forLength=signedIntegerLiteral)? RR_BRACKET
+    ;
+
+signedIntegerLiteral
+    : (PLUS|MINUS)?INTEGER_LITERAL
     ;

@@ -21,11 +21,13 @@ package org.apache.iotdb.tsfile.common.conf;
 import org.apache.iotdb.tsfile.file.metadata.enums.CompressionType;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.fileSystem.FSType;
+import org.apache.iotdb.tsfile.utils.FSUtils;
 
 import java.io.Serializable;
 import java.nio.charset.Charset;
+import java.util.Properties;
 
-/** TSFileConfig is a configure class. Every variables is public and has default value. */
+/** TSFileConfig is a configuration class. Every variable is public and has default value. */
 public class TSFileConfig implements Serializable {
 
   /** encoding configuration */
@@ -55,7 +57,7 @@ public class TSFileConfig implements Serializable {
 
   public static final String STRING_ENCODING = "UTF-8";
   public static final Charset STRING_CHARSET = Charset.forName(STRING_ENCODING);
-  public static final String CONFIG_FILE_NAME = "iotdb-engine.properties";
+  public static final String CONFIG_FILE_NAME = "iotdb-common.properties";
   public static final String MAGIC_STRING = "TsFile";
   public static final String VERSION_NUMBER_V2 = "000002";
   public static final String VERSION_NUMBER_V1 = "000001";
@@ -73,8 +75,8 @@ public class TSFileConfig implements Serializable {
   private int groupSizeInByte = 128 * 1024 * 1024;
   /** The memory size for each series writer to pack page, default value is 64KB. */
   private int pageSizeInByte = 64 * 1024;
-  /** The maximum number of data points in a page, default value is 1024 * 1024. */
-  private int maxNumberOfPointsInPage = 1024 * 1024;
+  /** The maximum number of data points in a page, default value is 10000. */
+  private int maxNumberOfPointsInPage = 10_000;
   /** The maximum degree of a metadataIndex node, default value is 256 */
   private int maxDegreeOfIndexNode = 256;
   /** Data type for input timestamp, TsFile supports INT64. */
@@ -107,14 +109,18 @@ public class TSFileConfig implements Serializable {
   private double sdtMaxError = 100;
   /** Default DFT satisfy rate is 0.1 */
   private double dftSatisfyRate = 0.1;
-  /** Data compression method, TsFile supports UNCOMPRESSED, SNAPPY or LZ4. */
+  /** Default SNR for FREQ encoding is 40dB. */
+  private double freqEncodingSNR = 40;
+  /** Default block size for FREQ encoding is 1024. */
+  private int freqEncodingBlockSize = 1024;
+  /** Data compression method, TsFile supports UNCOMPRESSED, SNAPPY, ZSTD or LZ4. */
   private CompressionType compressor = CompressionType.SNAPPY;
   /** Line count threshold for checking page memory occupied size. */
   private int pageCheckSizeThreshold = 100;
   /** Default endian value is BIG_ENDIAN. */
   private String endian = "BIG_ENDIAN";
   /** Default storage is in local file system */
-  private FSType TSFileStorageFs = FSType.LOCAL;
+  private FSType[] TSFileStorageFs = new FSType[] {FSType.LOCAL};
   /** Default core-site.xml file path is /etc/hadoop/conf/core-site.xml */
   private String coreSitePath = "/etc/hadoop/conf/core-site.xml";
   /** Default hdfs-site.xml file path is /etc/hadoop/conf/hdfs-site.xml */
@@ -145,6 +151,29 @@ public class TSFileConfig implements Serializable {
   private double bloomFilterErrorRate = 0.05;
   /** The amount of data iterate each time */
   private int batchSize = 1000;
+
+  /** Maximum capacity of a TsBlock, allow up to two pages. */
+  private int maxTsBlockSizeInBytes = 128 * 1024;
+
+  /** Maximum number of lines in a single TsBlock */
+  private int maxTsBlockLineNumber = 1000;
+
+  private int patternMatchingThreshold = 1000000;
+
+  private String hdfsFile = "org.apache.iotdb.hadoop.fileSystem.HDFSFile";
+
+  private String hdfsTsFileInput = "org.apache.iotdb.hadoop.fileSystem.HDFSInput";
+
+  private String hdfsTsFileOutput = "org.apache.iotdb.hadoop.fileSystem.HDFSOutput";
+
+  private String objectStorageFile = "org.apache.iotdb.os.fileSystem.OSFile";
+
+  private String objectStorageTsFileInput = "org.apache.iotdb.os.fileSystem.OSTsFileInput";
+
+  private String objectStorageTsFileOutput = "org.apache.iotdb.os.fileSystem.OSTsFileOutput";
+
+  /** customizedProperties, this should be empty by default. */
+  private Properties customizedProperties = new Properties();
 
   public TSFileConfig() {}
 
@@ -332,12 +361,13 @@ public class TSFileConfig implements Serializable {
     this.bloomFilterErrorRate = bloomFilterErrorRate;
   }
 
-  public FSType getTSFileStorageFs() {
+  public FSType[] getTSFileStorageFs() {
     return this.TSFileStorageFs;
   }
 
-  public void setTSFileStorageFs(FSType fileStorageFs) {
+  public void setTSFileStorageFs(FSType[] fileStorageFs) {
     this.TSFileStorageFs = fileStorageFs;
+    FSUtils.reload();
   }
 
   public String getCoreSitePath() {
@@ -410,5 +440,105 @@ public class TSFileConfig implements Serializable {
 
   public void setBatchSize(int batchSize) {
     this.batchSize = batchSize;
+  }
+
+  public double getFreqEncodingSNR() {
+    return freqEncodingSNR;
+  }
+
+  public void setFreqEncodingSNR(double freqEncodingSNR) {
+    this.freqEncodingSNR = freqEncodingSNR;
+  }
+
+  public int getFreqEncodingBlockSize() {
+    return freqEncodingBlockSize;
+  }
+
+  public void setFreqEncodingBlockSize(int freqEncodingBlockSize) {
+    this.freqEncodingBlockSize = freqEncodingBlockSize;
+  }
+
+  public int getMaxTsBlockSizeInBytes() {
+    return maxTsBlockSizeInBytes;
+  }
+
+  public void setMaxTsBlockSizeInBytes(int maxTsBlockSizeInBytes) {
+    this.maxTsBlockSizeInBytes = maxTsBlockSizeInBytes;
+  }
+
+  public int getMaxTsBlockLineNumber() {
+    return maxTsBlockLineNumber;
+  }
+
+  public void setMaxTsBlockLineNumber(int maxTsBlockLineNumber) {
+    this.maxTsBlockLineNumber = maxTsBlockLineNumber;
+  }
+
+  public int getPatternMatchingThreshold() {
+    return patternMatchingThreshold;
+  }
+
+  public void setPatternMatchingThreshold(int patternMatchingThreshold) {
+    this.patternMatchingThreshold = patternMatchingThreshold;
+  }
+
+  public Properties getCustomizedProperties() {
+    return customizedProperties;
+  }
+
+  public void setCustomizedProperties(Properties customizedProperties) {
+    this.customizedProperties = customizedProperties;
+  }
+
+  public String getSprintzPredictScheme() {
+    return "fire";
+  }
+
+  public String getHdfsFile() {
+    return hdfsFile;
+  }
+
+  public void setHdfsFile(String hdfsFile) {
+    this.hdfsFile = hdfsFile;
+  }
+
+  public String getHdfsTsFileInput() {
+    return hdfsTsFileInput;
+  }
+
+  public void setHdfsTsFileInput(String hdfsTsFileInput) {
+    this.hdfsTsFileInput = hdfsTsFileInput;
+  }
+
+  public String getHdfsTsFileOutput() {
+    return hdfsTsFileOutput;
+  }
+
+  public void setHdfsTsFileOutput(String hdfsTsFileOutput) {
+    this.hdfsTsFileOutput = hdfsTsFileOutput;
+  }
+
+  public String getObjectStorageFile() {
+    return objectStorageFile;
+  }
+
+  public void setObjectStorageFile(String objectStorageFile) {
+    this.objectStorageFile = objectStorageFile;
+  }
+
+  public String getObjectStorageTsFileInput() {
+    return objectStorageTsFileInput;
+  }
+
+  public void setObjectStorageTsFileInput(String objectStorageTsFileInput) {
+    this.objectStorageTsFileInput = objectStorageTsFileInput;
+  }
+
+  public String getObjectStorageTsFileOutput() {
+    return objectStorageTsFileOutput;
+  }
+
+  public void setObjectStorageTsFileOutput(String objectStorageTsFileOutput) {
+    this.objectStorageTsFileOutput = objectStorageTsFileOutput;
   }
 }

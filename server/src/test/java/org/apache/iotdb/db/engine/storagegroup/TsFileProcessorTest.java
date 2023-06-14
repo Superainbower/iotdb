@@ -18,14 +18,20 @@
  */
 package org.apache.iotdb.db.engine.storagegroup;
 
+import org.apache.iotdb.common.rpc.thrift.TSStatus;
+import org.apache.iotdb.commons.exception.IllegalPathException;
+import org.apache.iotdb.commons.exception.MetadataException;
+import org.apache.iotdb.commons.file.SystemFileFactory;
+import org.apache.iotdb.commons.path.MeasurementPath;
+import org.apache.iotdb.commons.path.PartialPath;
 import org.apache.iotdb.db.constant.TestConstant;
-import org.apache.iotdb.db.engine.MetadataManagerHelper;
-import org.apache.iotdb.db.engine.fileSystem.SystemFileFactory;
+import org.apache.iotdb.db.engine.memtable.IMemTable;
 import org.apache.iotdb.db.engine.querycontext.ReadOnlyMemChunk;
+import org.apache.iotdb.db.exception.DataRegionException;
 import org.apache.iotdb.db.exception.TsFileProcessorException;
 import org.apache.iotdb.db.exception.WriteProcessException;
-import org.apache.iotdb.db.exception.metadata.MetadataException;
-import org.apache.iotdb.db.qp.physical.crud.InsertRowPlan;
+import org.apache.iotdb.db.mpp.common.QueryId;
+import org.apache.iotdb.db.mpp.plan.planner.plan.node.write.InsertTabletNode;
 import org.apache.iotdb.db.query.context.QueryContext;
 import org.apache.iotdb.db.rescon.SystemInfo;
 import org.apache.iotdb.db.utils.EnvironmentUtils;
@@ -37,7 +43,7 @@ import org.apache.iotdb.tsfile.read.TimeValuePair;
 import org.apache.iotdb.tsfile.read.reader.IPointReader;
 import org.apache.iotdb.tsfile.write.record.TSRecord;
 import org.apache.iotdb.tsfile.write.record.datapoint.DataPoint;
-import org.apache.iotdb.tsfile.write.schema.UnaryMeasurementSchema;
+import org.apache.iotdb.tsfile.write.schema.MeasurementSchema;
 import org.apache.iotdb.tsfile.write.writer.RestorableTsFileIOWriter;
 
 import org.junit.After;
@@ -55,31 +61,35 @@ import java.util.List;
 import java.util.Map;
 
 import static junit.framework.TestCase.assertTrue;
+import static org.apache.iotdb.db.engine.storagegroup.DataRegionTest.buildInsertRowNodeByTSRecord;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 
 public class TsFileProcessorTest {
 
   private TsFileProcessor processor;
-  private String storageGroup = "root.vehicle";
-  private StorageGroupInfo sgInfo = new StorageGroupInfo(null);
-  private String filePath = TestConstant.getTestTsFilePath("root.vehicle", 0, 0, 0);
-  private String deviceId = "root.vehicle.d0";
-  private String measurementId = "s0";
-  private TSDataType dataType = TSDataType.INT32;
-  private TSEncoding encoding = TSEncoding.RLE;
-  private Map<String, String> props = Collections.emptyMap();
+  private final String storageGroup = "root.vehicle";
+  private DataRegionInfo sgInfo;
+  private final String filePath = TestConstant.getTestTsFilePath("root.vehicle", 0, 0, 0);
+  private final String deviceId = "root.vehicle.d0";
+  private final String measurementId = "s0";
+  private final TSDataType dataType = TSDataType.INT32;
+  private final TSEncoding encoding = TSEncoding.RLE;
+  private final Map<String, String> props = Collections.emptyMap();
   private QueryContext context;
-  private static Logger logger = LoggerFactory.getLogger(TsFileProcessorTest.class);
+  private final String systemDir = TestConstant.OUTPUT_DATA_DIR.concat("info");
+  private static final Logger logger = LoggerFactory.getLogger(TsFileProcessorTest.class);
+
+  public TsFileProcessorTest() {}
 
   @Before
-  public void setUp() {
+  public void setUp() throws DataRegionException {
     File file = new File(filePath);
     if (!file.getParentFile().exists()) {
       Assert.assertTrue(file.getParentFile().mkdirs());
     }
     EnvironmentUtils.envSetUp();
-    MetadataManagerHelper.initMetadata();
+    sgInfo = new DataRegionInfo(new DataRegionTest.DummyDataRegion(systemDir, storageGroup));
     context = EnvironmentUtils.TEST_QUERY_CONTEXT;
   }
 
@@ -98,7 +108,7 @@ public class TsFileProcessorTest {
             SystemFileFactory.INSTANCE.getFile(filePath),
             sgInfo,
             this::closeTsFileProcessor,
-            (tsFileProcessor) -> true,
+            (tsFileProcessor, updateMap, systemFlushTime) -> {},
             true);
 
     TsFileProcessorInfo tsFileProcessorInfo = new TsFileProcessorInfo(sgInfo);
@@ -106,32 +116,28 @@ public class TsFileProcessorTest {
     this.sgInfo.initTsFileProcessorInfo(processor);
     SystemInfo.getInstance().reportStorageGroupStatus(sgInfo, processor);
     List<TsFileResource> tsfileResourcesForQuery = new ArrayList<>();
-    processor.query(
-        deviceId,
-        measurementId,
-        new UnaryMeasurementSchema(
-            measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props),
-        context,
-        tsfileResourcesForQuery);
+    MeasurementPath fullPath =
+        new MeasurementPath(
+            deviceId,
+            measurementId,
+            new MeasurementSchema(
+                measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props));
+    processor.query(Collections.singletonList(fullPath), context, tsfileResourcesForQuery);
     assertTrue(tsfileResourcesForQuery.isEmpty());
 
     for (int i = 1; i <= 100; i++) {
       TSRecord record = new TSRecord(i, deviceId);
       record.addTuple(DataPoint.getDataPoint(dataType, measurementId, String.valueOf(i)));
-      processor.insert(new InsertRowPlan(record));
+      processor.insert(buildInsertRowNodeByTSRecord(record));
     }
 
     // query data in memory
     tsfileResourcesForQuery.clear();
-    processor.query(
-        deviceId,
-        measurementId,
-        new UnaryMeasurementSchema(
-            measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props),
-        context,
-        tsfileResourcesForQuery);
-    assertFalse(tsfileResourcesForQuery.get(0).getReadOnlyMemChunk().isEmpty());
-    List<ReadOnlyMemChunk> memChunks = tsfileResourcesForQuery.get(0).getReadOnlyMemChunk();
+    processor.query(Collections.singletonList(fullPath), context, tsfileResourcesForQuery);
+
+    TsFileResource tsFileResource = tsfileResourcesForQuery.get(0);
+    assertFalse(tsFileResource.getReadOnlyMemChunk(fullPath).isEmpty());
+    List<ReadOnlyMemChunk> memChunks = tsFileResource.getReadOnlyMemChunk(fullPath);
     for (ReadOnlyMemChunk chunk : memChunks) {
       IPointReader iterator = chunk.getPointReader();
       for (int num = 1; num <= 100; num++) {
@@ -146,20 +152,8 @@ public class TsFileProcessorTest {
     processor.syncFlush();
 
     tsfileResourcesForQuery.clear();
-    processor.query(
-        deviceId,
-        measurementId,
-        new UnaryMeasurementSchema(
-            measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props),
-        context,
-        tsfileResourcesForQuery);
-    assertTrue(tsfileResourcesForQuery.get(0).getReadOnlyMemChunk().isEmpty());
-    assertEquals(1, tsfileResourcesForQuery.get(0).getChunkMetadataList().size());
-    assertEquals(
-        measurementId,
-        tsfileResourcesForQuery.get(0).getChunkMetadataList().get(0).getMeasurementUid());
-    assertEquals(
-        dataType, tsfileResourcesForQuery.get(0).getChunkMetadataList().get(0).getDataType());
+    processor.query(Collections.singletonList(fullPath), context, tsfileResourcesForQuery);
+    assertTrue(tsfileResourcesForQuery.get(0).getReadOnlyMemChunk(fullPath).isEmpty());
     processor.syncClose();
   }
 
@@ -173,7 +167,7 @@ public class TsFileProcessorTest {
             SystemFileFactory.INSTANCE.getFile(filePath),
             sgInfo,
             this::closeTsFileProcessor,
-            (tsFileProcessor) -> true,
+            (tsFileProcessor, updateMap, systemFlushTime) -> {},
             true);
 
     TsFileProcessorInfo tsFileProcessorInfo = new TsFileProcessorInfo(sgInfo);
@@ -181,33 +175,27 @@ public class TsFileProcessorTest {
     this.sgInfo.initTsFileProcessorInfo(processor);
     SystemInfo.getInstance().reportStorageGroupStatus(sgInfo, processor);
     List<TsFileResource> tsfileResourcesForQuery = new ArrayList<>();
-    processor.query(
-        deviceId,
-        measurementId,
-        new UnaryMeasurementSchema(
-            measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props),
-        context,
-        tsfileResourcesForQuery);
+    MeasurementPath fullPath =
+        new MeasurementPath(
+            deviceId,
+            measurementId,
+            new MeasurementSchema(
+                measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props));
+    processor.query(Collections.singletonList(fullPath), context, tsfileResourcesForQuery);
     assertTrue(tsfileResourcesForQuery.isEmpty());
 
     for (int i = 1; i <= 100; i++) {
       TSRecord record = new TSRecord(i, deviceId);
       record.addTuple(DataPoint.getDataPoint(dataType, measurementId, String.valueOf(i)));
-      processor.insert(new InsertRowPlan(record));
+      processor.insert(buildInsertRowNodeByTSRecord(record));
     }
 
     // query data in memory
     tsfileResourcesForQuery.clear();
-    processor.query(
-        deviceId,
-        measurementId,
-        new UnaryMeasurementSchema(
-            measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props),
-        context,
-        tsfileResourcesForQuery);
-    assertFalse(tsfileResourcesForQuery.get(0).getReadOnlyMemChunk().isEmpty());
+    processor.query(Collections.singletonList(fullPath), context, tsfileResourcesForQuery);
+    assertFalse(tsfileResourcesForQuery.get(0).getReadOnlyMemChunk(fullPath).isEmpty());
     int num = 1;
-    List<ReadOnlyMemChunk> memChunks = tsfileResourcesForQuery.get(0).getReadOnlyMemChunk();
+    List<ReadOnlyMemChunk> memChunks = tsfileResourcesForQuery.get(0).getReadOnlyMemChunk(fullPath);
     for (ReadOnlyMemChunk chunk : memChunks) {
       IPointReader iterator = chunk.getPointReader();
       for (; num <= 100; num++) {
@@ -222,20 +210,8 @@ public class TsFileProcessorTest {
     processor.syncFlush();
 
     tsfileResourcesForQuery.clear();
-    processor.query(
-        deviceId,
-        measurementId,
-        new UnaryMeasurementSchema(
-            measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props),
-        context,
-        tsfileResourcesForQuery);
-    assertTrue(tsfileResourcesForQuery.get(0).getReadOnlyMemChunk().isEmpty());
-    assertEquals(1, tsfileResourcesForQuery.get(0).getChunkMetadataList().size());
-    assertEquals(
-        measurementId,
-        tsfileResourcesForQuery.get(0).getChunkMetadataList().get(0).getMeasurementUid());
-    assertEquals(
-        dataType, tsfileResourcesForQuery.get(0).getChunkMetadataList().get(0).getDataType());
+    processor.query(Collections.singletonList(fullPath), context, tsfileResourcesForQuery);
+    assertTrue(tsfileResourcesForQuery.get(0).getReadOnlyMemChunk(fullPath).isEmpty());
 
     RestorableTsFileIOWriter tsFileIOWriter = processor.getWriter();
     Map<String, List<ChunkMetadata>> chunkMetaDataListInChunkGroups =
@@ -278,7 +254,7 @@ public class TsFileProcessorTest {
             SystemFileFactory.INSTANCE.getFile(filePath),
             sgInfo,
             this::closeTsFileProcessor,
-            (tsFileProcessor) -> true,
+            (tsFileProcessor, updateMap, systemFlushTime) -> {},
             true);
 
     TsFileProcessorInfo tsFileProcessorInfo = new TsFileProcessorInfo(sgInfo);
@@ -286,42 +262,102 @@ public class TsFileProcessorTest {
     this.sgInfo.initTsFileProcessorInfo(processor);
     SystemInfo.getInstance().reportStorageGroupStatus(sgInfo, processor);
     List<TsFileResource> tsfileResourcesForQuery = new ArrayList<>();
-    processor.query(
-        deviceId,
-        measurementId,
-        new UnaryMeasurementSchema(
-            measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props),
-        context,
-        tsfileResourcesForQuery);
+    MeasurementPath fullPath =
+        new MeasurementPath(
+            deviceId,
+            measurementId,
+            new MeasurementSchema(
+                measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props));
+    processor.query(Collections.singletonList(fullPath), context, tsfileResourcesForQuery);
     assertTrue(tsfileResourcesForQuery.isEmpty());
 
     for (int flushId = 0; flushId < 10; flushId++) {
       for (int i = 1; i <= 10; i++) {
         TSRecord record = new TSRecord(i, deviceId);
         record.addTuple(DataPoint.getDataPoint(dataType, measurementId, String.valueOf(i)));
-        processor.insert(new InsertRowPlan(record));
+        processor.insert(buildInsertRowNodeByTSRecord(record));
       }
       processor.asyncFlush();
     }
     processor.syncFlush();
 
     tsfileResourcesForQuery.clear();
-    processor.query(
-        deviceId,
-        measurementId,
-        new UnaryMeasurementSchema(
-            measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props),
-        context,
-        tsfileResourcesForQuery);
+    processor.query(Collections.singletonList(fullPath), context, tsfileResourcesForQuery);
     assertFalse(tsfileResourcesForQuery.isEmpty());
-    assertTrue(tsfileResourcesForQuery.get(0).getReadOnlyMemChunk().isEmpty());
-    assertEquals(10, tsfileResourcesForQuery.get(0).getChunkMetadataList().size());
-    assertEquals(
-        measurementId,
-        tsfileResourcesForQuery.get(0).getChunkMetadataList().get(0).getMeasurementUid());
-    assertEquals(
-        dataType, tsfileResourcesForQuery.get(0).getChunkMetadataList().get(0).getDataType());
+    assertTrue(tsfileResourcesForQuery.get(0).getReadOnlyMemChunk(fullPath).isEmpty());
     processor.syncClose();
+  }
+
+  @Test
+  public void alignedTvListRamCostTest()
+      throws MetadataException, WriteProcessException, IOException {
+    processor =
+        new TsFileProcessor(
+            storageGroup,
+            SystemFileFactory.INSTANCE.getFile(filePath),
+            sgInfo,
+            this::closeTsFileProcessor,
+            (tsFileProcessor, updateMap, systemFlushTime) -> {},
+            true);
+    TsFileProcessorInfo tsFileProcessorInfo = new TsFileProcessorInfo(sgInfo);
+    processor.setTsFileProcessorInfo(tsFileProcessorInfo);
+    this.sgInfo.initTsFileProcessorInfo(processor);
+    SystemInfo.getInstance().reportStorageGroupStatus(sgInfo, processor);
+    // Test Tablet
+    processor.insertTablet(genInsertTableNode(0, true), 0, 10, new TSStatus[10]);
+    IMemTable memTable = processor.getWorkMemTable();
+    Assert.assertEquals(1596808, memTable.getTVListsRamCost());
+    processor.insertTablet(genInsertTableNode(100, true), 0, 10, new TSStatus[10]);
+    Assert.assertEquals(1596808, memTable.getTVListsRamCost());
+    processor.insertTablet(genInsertTableNode(200, true), 0, 10, new TSStatus[10]);
+    Assert.assertEquals(1596808, memTable.getTVListsRamCost());
+    Assert.assertEquals(90000, memTable.getTotalPointsNum());
+    Assert.assertEquals(720360, memTable.memSize());
+    // Test records
+    for (int i = 1; i <= 100; i++) {
+      TSRecord record = new TSRecord(i, deviceId);
+      record.addTuple(DataPoint.getDataPoint(dataType, measurementId, String.valueOf(i)));
+      processor.insert(buildInsertRowNodeByTSRecord(record));
+    }
+    Assert.assertEquals(1598424, memTable.getTVListsRamCost());
+    Assert.assertEquals(90100, memTable.getTotalPointsNum());
+    Assert.assertEquals(721560, memTable.memSize());
+  }
+
+  @Test
+  public void nonAlignedTvListRamCostTest()
+      throws MetadataException, WriteProcessException, IOException {
+    processor =
+        new TsFileProcessor(
+            storageGroup,
+            SystemFileFactory.INSTANCE.getFile(filePath),
+            sgInfo,
+            this::closeTsFileProcessor,
+            (tsFileProcessor, updateMap, systemFlushTime) -> {},
+            true);
+    TsFileProcessorInfo tsFileProcessorInfo = new TsFileProcessorInfo(sgInfo);
+    processor.setTsFileProcessorInfo(tsFileProcessorInfo);
+    this.sgInfo.initTsFileProcessorInfo(processor);
+    SystemInfo.getInstance().reportStorageGroupStatus(sgInfo, processor);
+    // Test tablet
+    processor.insertTablet(genInsertTableNode(0, false), 0, 10, new TSStatus[10]);
+    IMemTable memTable = processor.getWorkMemTable();
+    Assert.assertEquals(3192000, memTable.getTVListsRamCost());
+    processor.insertTablet(genInsertTableNode(100, false), 0, 10, new TSStatus[10]);
+    Assert.assertEquals(3192000, memTable.getTVListsRamCost());
+    processor.insertTablet(genInsertTableNode(200, false), 0, 10, new TSStatus[10]);
+    Assert.assertEquals(3192000, memTable.getTVListsRamCost());
+    Assert.assertEquals(90000, memTable.getTotalPointsNum());
+    Assert.assertEquals(1440000, memTable.memSize());
+    // Test records
+    for (int i = 1; i <= 100; i++) {
+      TSRecord record = new TSRecord(i, deviceId);
+      record.addTuple(DataPoint.getDataPoint(dataType, measurementId, String.valueOf(i)));
+      processor.insert(buildInsertRowNodeByTSRecord(record));
+    }
+    Assert.assertEquals(3193616, memTable.getTVListsRamCost());
+    Assert.assertEquals(90100, memTable.getTotalPointsNum());
+    Assert.assertEquals(1441200, memTable.memSize());
   }
 
   @Test
@@ -333,7 +369,7 @@ public class TsFileProcessorTest {
             SystemFileFactory.INSTANCE.getFile(filePath),
             sgInfo,
             this::closeTsFileProcessor,
-            (tsFileProcessor) -> true,
+            (tsFileProcessor, updateMap, systemFlushTime) -> {},
             true);
 
     TsFileProcessorInfo tsFileProcessorInfo = new TsFileProcessorInfo(sgInfo);
@@ -342,33 +378,27 @@ public class TsFileProcessorTest {
     SystemInfo.getInstance().reportStorageGroupStatus(sgInfo, processor);
     List<TsFileResource> tsfileResourcesForQuery = new ArrayList<>();
 
-    processor.query(
-        deviceId,
-        measurementId,
-        new UnaryMeasurementSchema(
-            measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props),
-        context,
-        tsfileResourcesForQuery);
+    MeasurementPath fullPath =
+        new MeasurementPath(
+            deviceId,
+            measurementId,
+            new MeasurementSchema(
+                measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props));
+    processor.query(Collections.singletonList(fullPath), context, tsfileResourcesForQuery);
     assertTrue(tsfileResourcesForQuery.isEmpty());
 
     for (int i = 1; i <= 100; i++) {
       TSRecord record = new TSRecord(i, deviceId);
       record.addTuple(DataPoint.getDataPoint(dataType, measurementId, String.valueOf(i)));
-      processor.insert(new InsertRowPlan(record));
+      processor.insert(buildInsertRowNodeByTSRecord(record));
     }
 
     // query data in memory
     tsfileResourcesForQuery.clear();
-    processor.query(
-        deviceId,
-        measurementId,
-        new UnaryMeasurementSchema(
-            measurementId, dataType, encoding, CompressionType.UNCOMPRESSED, props),
-        context,
-        tsfileResourcesForQuery);
+    processor.query(Collections.singletonList(fullPath), context, tsfileResourcesForQuery);
     assertFalse(tsfileResourcesForQuery.isEmpty());
-    assertFalse(tsfileResourcesForQuery.get(0).getReadOnlyMemChunk().isEmpty());
-    List<ReadOnlyMemChunk> memChunks = tsfileResourcesForQuery.get(0).getReadOnlyMemChunk();
+    assertFalse(tsfileResourcesForQuery.get(0).getReadOnlyMemChunk(fullPath).isEmpty());
+    List<ReadOnlyMemChunk> memChunks = tsfileResourcesForQuery.get(0).getReadOnlyMemChunk(fullPath);
     for (ReadOnlyMemChunk chunk : memChunks) {
       IPointReader iterator = chunk.getPointReader();
       for (int num = 1; num <= 100; num++) {
@@ -403,5 +433,48 @@ public class TsFileProcessorTest {
         throw new TsFileProcessorException(e);
       }
     }
+  }
+
+  private InsertTabletNode genInsertTableNode(long startTime, boolean isAligned)
+      throws IllegalPathException {
+    String deviceId = "root.sg.device5";
+    String[] measurements = new String[3000];
+    TSDataType[] dataTypes = new TSDataType[3000];
+    TSEncoding[] encodings = new TSEncoding[3000];
+    MeasurementSchema[] schemas = new MeasurementSchema[3000];
+    for (int i = 0; i < 3000; i++) {
+      measurements[i] = "s" + i;
+      dataTypes[i] = TSDataType.INT64;
+      encodings[i] = TSEncoding.PLAIN;
+      schemas[i] = new MeasurementSchema(measurements[i], dataTypes[i], encodings[i]);
+    }
+
+    long[] times = new long[10];
+    Object[] columns = new Object[3000];
+    for (int i = 0; i < 3000; i++) {
+      columns[i] = new long[10];
+    }
+
+    for (long r = 0; r < 10; r++) {
+      times[(int) r] = r + startTime;
+      for (int i = 0; i < 3000; i++) {
+        ((long[]) columns[i])[(int) r] = r;
+      }
+    }
+
+    InsertTabletNode insertTabletNode =
+        new InsertTabletNode(
+            new QueryId("test_write").genPlanNodeId(),
+            new PartialPath(deviceId),
+            isAligned,
+            measurements,
+            dataTypes,
+            times,
+            null,
+            columns,
+            times.length);
+    insertTabletNode.setMeasurementSchemas(schemas);
+
+    return insertTabletNode;
   }
 }

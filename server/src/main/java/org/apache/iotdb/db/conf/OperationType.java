@@ -26,12 +26,14 @@ public enum OperationType {
   EXECUTE_QUERY_STATEMENT("executeQueryStatement"),
   EXECUTE_RAW_DATA_QUERY("executeRawDataQuery"),
   EXECUTE_LAST_DATA_QUERY("lastDataQueryReqToPhysicalPlan"),
+  EXECUTE_AGG_QUERY("executeAggregationQuery"),
   FETCH_RESULTS("fetchResults"),
   EXECUTE_UPDATE_STATEMENT("executeUpdateStatement"),
   GET_TIME_ZONE("getTimeZone"),
   SET_TIME_ZONE("setTimeZone"),
   INSERT_RECORDS("insertRecords"),
   INSERT_RECORDS_OF_ONE_DEVICE("insertRecordsOfOneDevice"),
+  INSERT_STRING_RECORDS_OF_ONE_DEVICE("insertStringRecordsOfOneDevice"),
   INSERT_STRING_RECORDS("insertStringRecords"),
   INSERT_RECORD("insertRecord"),
   INSERT_STRING_RECORD("insertStringRecord"),
@@ -47,7 +49,7 @@ public enum OperationType {
   CREATE_SCHEMA_TEMPLATE("createSchemaTemplate"),
   CHECK_AUTHORITY("checkAuthority"),
   EXECUTE_NON_QUERY_PLAN("executeNonQueryPlan"),
-  ;
+  QUERY_LATENCY("queryLatency");
   private final String name;
 
   OperationType(String name) {

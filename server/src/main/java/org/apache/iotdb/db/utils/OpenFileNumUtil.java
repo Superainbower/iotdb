@@ -19,10 +19,12 @@
 
 package org.apache.iotdb.db.utils;
 
+import org.apache.iotdb.commons.conf.CommonConfig;
+import org.apache.iotdb.commons.conf.CommonDescriptor;
+import org.apache.iotdb.commons.conf.IoTDBConstant;
 import org.apache.iotdb.db.conf.IoTDBConfig;
-import org.apache.iotdb.db.conf.IoTDBConstant;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
-import org.apache.iotdb.db.conf.directories.DirectoryManager;
+import org.apache.iotdb.db.conf.directories.TierManager;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +32,7 @@ import org.slf4j.LoggerFactory;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
@@ -50,7 +53,8 @@ public class OpenFileNumUtil {
   private static final String SEARCH_OPEN_DATA_FILE_BY_PID = "lsof -p %d";
 
   private static IoTDBConfig config = IoTDBDescriptor.getInstance().getConfig();
-  private static DirectoryManager directoryManager = DirectoryManager.getInstance();
+  private static CommonConfig commonConfig = CommonDescriptor.getInstance().getConfig();
+  private static TierManager tierManager = TierManager.getInstance();
   private static final String[] COMMAND_TEMPLATE = {"/bin/bash", "-c", ""};
   private static boolean isOutputValid = false;
   private int pid;
@@ -262,9 +266,9 @@ public class OpenFileNumUtil {
 
   public enum OpenFileNumStatistics {
     TOTAL_OPEN_FILE_NUM(null),
-    SEQUENCE_FILE_OPEN_NUM(directoryManager.getAllSequenceFileFolders()),
-    UNSEQUENCE_FILE_OPEN_NUM(directoryManager.getAllUnSequenceFileFolders()),
-    WAL_OPEN_FILE_NUM(Collections.singletonList(config.getWalDir())),
+    SEQUENCE_FILE_OPEN_NUM(tierManager.getAllLocalSequenceFileFolders()),
+    UNSEQUENCE_FILE_OPEN_NUM(tierManager.getAllLocalUnSequenceFileFolders()),
+    WAL_OPEN_FILE_NUM(Arrays.asList(commonConfig.getWalDirs())),
     DIGEST_OPEN_FILE_NUM(Collections.singletonList(config.getSystemDir())),
     SOCKET_OPEN_FILE_NUM(null);
 

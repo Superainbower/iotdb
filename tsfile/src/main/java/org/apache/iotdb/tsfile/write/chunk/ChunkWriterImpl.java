@@ -46,12 +46,12 @@ public class ChunkWriterImpl implements IChunkWriter {
 
   private static final Logger logger = LoggerFactory.getLogger(ChunkWriterImpl.class);
 
-  private IMeasurementSchema measurementSchema;
+  private final IMeasurementSchema measurementSchema;
 
-  private ICompressor compressor;
+  private final ICompressor compressor;
 
   /** all pages of this chunk. */
-  private PublicBAOS pageBuffer;
+  private final PublicBAOS pageBuffer;
 
   private int numOfPages;
 
@@ -145,8 +145,7 @@ public class ChunkWriterImpl implements IChunkWriter {
     }
   }
 
-  @Override
-  public void write(long time, long value, boolean isNull) {
+  public void write(long time, long value) {
     // store last point for sdtEncoding, it still needs to go through encoding process
     // in case it exceeds compdev and needs to store second last point
     if (!isSdtEncoding || sdtEncoder.encodeLong(time, value)) {
@@ -160,8 +159,7 @@ public class ChunkWriterImpl implements IChunkWriter {
     checkPageSizeAndMayOpenANewPage();
   }
 
-  @Override
-  public void write(long time, int value, boolean isNull) {
+  public void write(long time, int value) {
     if (!isSdtEncoding || sdtEncoder.encodeInt(time, value)) {
       pageWriter.write(
           isSdtEncoding ? sdtEncoder.getTime() : time,
@@ -173,14 +171,12 @@ public class ChunkWriterImpl implements IChunkWriter {
     checkPageSizeAndMayOpenANewPage();
   }
 
-  @Override
-  public void write(long time, boolean value, boolean isNull) {
+  public void write(long time, boolean value) {
     pageWriter.write(time, value);
     checkPageSizeAndMayOpenANewPage();
   }
 
-  @Override
-  public void write(long time, float value, boolean isNull) {
+  public void write(long time, float value) {
     if (!isSdtEncoding || sdtEncoder.encodeFloat(time, value)) {
       pageWriter.write(
           isSdtEncoding ? sdtEncoder.getTime() : time,
@@ -193,8 +189,7 @@ public class ChunkWriterImpl implements IChunkWriter {
     checkPageSizeAndMayOpenANewPage();
   }
 
-  @Override
-  public void write(long time, double value, boolean isNull) {
+  public void write(long time, double value) {
     if (!isSdtEncoding || sdtEncoder.encodeDouble(time, value)) {
       pageWriter.write(
           isSdtEncoding ? sdtEncoder.getTime() : time,
@@ -206,18 +201,11 @@ public class ChunkWriterImpl implements IChunkWriter {
     checkPageSizeAndMayOpenANewPage();
   }
 
-  @Override
-  public void write(long time, Binary value, boolean isNull) {
+  public void write(long time, Binary value) {
     pageWriter.write(time, value);
     checkPageSizeAndMayOpenANewPage();
   }
 
-  @Override
-  public void write(long time) {
-    throw new IllegalStateException("write time method is not implemented in common chunk writer");
-  }
-
-  @Override
   public void write(long[] timestamps, int[] values, int batchSize) {
     if (isSdtEncoding) {
       batchSize = sdtEncoder.encode(timestamps, values, batchSize);
@@ -226,7 +214,6 @@ public class ChunkWriterImpl implements IChunkWriter {
     checkPageSizeAndMayOpenANewPage();
   }
 
-  @Override
   public void write(long[] timestamps, long[] values, int batchSize) {
     if (isSdtEncoding) {
       batchSize = sdtEncoder.encode(timestamps, values, batchSize);
@@ -235,13 +222,11 @@ public class ChunkWriterImpl implements IChunkWriter {
     checkPageSizeAndMayOpenANewPage();
   }
 
-  @Override
   public void write(long[] timestamps, boolean[] values, int batchSize) {
     pageWriter.write(timestamps, values, batchSize);
     checkPageSizeAndMayOpenANewPage();
   }
 
-  @Override
   public void write(long[] timestamps, float[] values, int batchSize) {
     if (isSdtEncoding) {
       batchSize = sdtEncoder.encode(timestamps, values, batchSize);
@@ -250,7 +235,6 @@ public class ChunkWriterImpl implements IChunkWriter {
     checkPageSizeAndMayOpenANewPage();
   }
 
-  @Override
   public void write(long[] timestamps, double[] values, int batchSize) {
     if (isSdtEncoding) {
       batchSize = sdtEncoder.encode(timestamps, values, batchSize);
@@ -259,7 +243,6 @@ public class ChunkWriterImpl implements IChunkWriter {
     checkPageSizeAndMayOpenANewPage();
   }
 
-  @Override
   public void write(long[] timestamps, Binary[] values, int batchSize) {
     pageWriter.write(timestamps, values, batchSize);
     checkPageSizeAndMayOpenANewPage();
@@ -331,6 +314,7 @@ public class ChunkWriterImpl implements IChunkWriter {
     // reinit this chunk writer
     pageBuffer.reset();
     numOfPages = 0;
+    sizeWithoutStatistic = 0;
     firstPageStatistics = null;
     this.statistics = Statistics.getStatsByType(measurementSchema.getType());
   }
@@ -366,11 +350,26 @@ public class ChunkWriterImpl implements IChunkWriter {
   }
 
   @Override
-  public int getNumOfPages() {
-    return numOfPages;
+  public boolean checkIsUnsealedPageOverThreshold(
+      long size, long pointNum, boolean returnTrueIfPageEmpty) {
+    if (returnTrueIfPageEmpty && pageWriter.getPointNumber() == 0) {
+      // return true if there is no unsealed page
+      return true;
+    }
+    return pageWriter.getPointNumber() >= pointNum || pageWriter.estimateMaxMemSize() >= size;
   }
 
   @Override
+  public boolean checkIsChunkSizeOverThreshold(
+      long size, long pointNum, boolean returnTrueIfChunkEmpty) {
+    if (returnTrueIfChunkEmpty && statistics.getCount() + pageWriter.getPointNumber() == 0) {
+      // return true if there is no unsealed chunk
+      return true;
+    }
+    return estimateMaxSeriesMemSize() >= size
+        || statistics.getCount() + pageWriter.getPointNumber() >= pointNum;
+  }
+
   public TSDataType getDataType() {
     return measurementSchema.getType();
   }
@@ -479,5 +478,10 @@ public class ChunkWriterImpl implements IChunkWriter {
 
   public void setLastPoint(boolean isLastPoint) {
     this.isLastPoint = isLastPoint;
+  }
+
+  /** Only used for tests. */
+  public PageWriter getPageWriter() {
+    return pageWriter;
   }
 }

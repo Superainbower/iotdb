@@ -31,11 +31,6 @@ public class MicrometerHistogram implements Histogram {
   }
 
   @Override
-  public void update(int value) {
-    distributionSummary.record(value);
-  }
-
-  @Override
   public void update(long value) {
     distributionSummary.record(value);
   }
@@ -47,6 +42,6 @@ public class MicrometerHistogram implements Histogram {
 
   @Override
   public org.apache.iotdb.metrics.type.HistogramSnapshot takeSnapshot() {
-    return new MicrometerHistogramSnapshot(distributionSummary.takeSnapshot());
+    return new MicrometerHistogramSnapshot(distributionSummary);
   }
 }

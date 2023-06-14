@@ -19,15 +19,17 @@
 
 package org.apache.iotdb.db.service;
 
+import org.apache.iotdb.commons.concurrent.IoTDBThreadPoolFactory;
+import org.apache.iotdb.commons.concurrent.ThreadName;
+import org.apache.iotdb.commons.exception.IllegalPathException;
+import org.apache.iotdb.commons.path.PartialPath;
+import org.apache.iotdb.commons.service.IService;
+import org.apache.iotdb.commons.service.ServiceType;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
-import org.apache.iotdb.db.engine.StorageEngine;
 import org.apache.iotdb.db.engine.settle.SettleLog;
 import org.apache.iotdb.db.engine.settle.SettleTask;
 import org.apache.iotdb.db.engine.storagegroup.TsFileResource;
-import org.apache.iotdb.db.exception.StorageEngineException;
 import org.apache.iotdb.db.exception.WriteProcessException;
-import org.apache.iotdb.db.exception.metadata.IllegalPathException;
-import org.apache.iotdb.db.metadata.PartialPath;
 import org.apache.iotdb.db.tools.settle.TsFileAndModSettleTool;
 
 import org.slf4j.Logger;
@@ -39,13 +41,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class SettleService implements IService {
   private static final Logger logger = LoggerFactory.getLogger(SettleService.class);
 
-  private AtomicInteger threadCnt = new AtomicInteger();
   private ExecutorService settleThreadPool;
   private boolean isRecoverFinish;
 
@@ -66,8 +66,7 @@ public class SettleService implements IService {
     if (settleThreadPool == null) {
       int settleThreadNum = IoTDBDescriptor.getInstance().getConfig().getSettleThreadNum();
       settleThreadPool =
-          Executors.newFixedThreadPool(
-              settleThreadNum, r -> new Thread(r, "SettleThread-" + threadCnt.getAndIncrement()));
+          IoTDBThreadPoolFactory.newFixedThreadPool(settleThreadNum, ThreadName.SETTLE.getName());
     }
     TsFileAndModSettleTool.findFilesToBeRecovered();
 
@@ -87,25 +86,25 @@ public class SettleService implements IService {
           tmpSgResourcesMap.put(sgPath, tsFilePaths);
         }
       }
-      while (!StorageEngine.getInstance().isAllSgReady()) {
-        // wait for all sg ready
-      }
+      //      while (!StorageEngine.getInstance().isAllSgReady()) {
+      //        // wait for all sg ready
+      //      }
       List<TsFileResource> seqResourcesToBeSettled = new ArrayList<>();
       List<TsFileResource> unseqResourcesToBeSettled = new ArrayList<>();
-      for (Map.Entry<PartialPath, List<String>> entry : tmpSgResourcesMap.entrySet()) {
-        try {
-          StorageEngine.getInstance()
-              .getResourcesToBeSettled(
-                  entry.getKey(),
-                  seqResourcesToBeSettled,
-                  unseqResourcesToBeSettled,
-                  entry.getValue());
-        } catch (StorageEngineException e) {
-          e.printStackTrace();
-        } finally {
-          StorageEngine.getInstance().setSettling(entry.getKey(), false);
-        }
-      }
+      //      for (Map.Entry<PartialPath, List<String>> entry : tmpSgResourcesMap.entrySet()) {
+      //        try {
+      //          StorageEngine.getInstance()
+      //              .getResourcesToBeSettled(
+      //                  entry.getKey(),
+      //                  seqResourcesToBeSettled,
+      //                  unseqResourcesToBeSettled,
+      //                  entry.getValue());
+      //        } catch (StorageEngineException e) {
+      //          e.printStackTrace();
+      //        } finally {
+      //          StorageEngine.getInstance().setSettling(entry.getKey(), false);
+      //        }
+      //      }
       startSettling(seqResourcesToBeSettled, unseqResourcesToBeSettled);
       setRecoverFinish(true);
     } catch (WriteProcessException e) {
@@ -123,9 +122,8 @@ public class SettleService implements IService {
       return;
     }
     logger.info(
-        "Totally find "
-            + (seqResourcesToBeSettled.size() + unseqResourcesToBeSettled.size())
-            + " tsFiles to be settled.");
+        "Totally find {} tsFiles to be settled.",
+        seqResourcesToBeSettled.size() + unseqResourcesToBeSettled.size());
     // settle seqTsFile
     for (TsFileResource resource : seqResourcesToBeSettled) {
       resource.readLock();

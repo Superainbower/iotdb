@@ -16,28 +16,25 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
 package org.apache.iotdb.db.engine.flush;
 
-import org.apache.iotdb.db.concurrent.WrappedRunnable;
+import org.apache.iotdb.commons.concurrent.WrappedRunnable;
+import org.apache.iotdb.commons.exception.StartupException;
+import org.apache.iotdb.commons.service.IService;
+import org.apache.iotdb.commons.service.JMXService;
+import org.apache.iotdb.commons.service.ServiceType;
+import org.apache.iotdb.commons.service.metric.MetricService;
 import org.apache.iotdb.db.conf.IoTDBConfig;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
 import org.apache.iotdb.db.engine.flush.pool.FlushSubTaskPoolManager;
 import org.apache.iotdb.db.engine.flush.pool.FlushTaskPoolManager;
 import org.apache.iotdb.db.engine.storagegroup.TsFileProcessor;
-import org.apache.iotdb.db.exception.StartupException;
-import org.apache.iotdb.db.exception.StorageEngineException;
-import org.apache.iotdb.db.exception.metadata.MetadataException;
-import org.apache.iotdb.db.monitor.StatMonitor;
-import org.apache.iotdb.db.service.IService;
-import org.apache.iotdb.db.service.JMXService;
-import org.apache.iotdb.db.service.ServiceType;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.ConcurrentLinkedDeque;
-
-import static java.io.File.separator;
 
 public class FlushManager implements FlushManagerMBean, IService {
 
@@ -55,6 +52,7 @@ public class FlushManager implements FlushManagerMBean, IService {
     flushPool.start();
     try {
       JMXService.registerMBean(this, ServiceType.FLUSH_SERVICE.getJmxName());
+      MetricService.getInstance().addMetricSet(new FlushManagerMetrics(this));
     } catch (Exception e) {
       throw new StartupException(this.getID().getName(), e.getMessage());
     }
@@ -70,6 +68,11 @@ public class FlushManager implements FlushManagerMBean, IService {
   @Override
   public ServiceType getID() {
     return ServiceType.FLUSH_SERVICE;
+  }
+
+  @Override
+  public int getNumberOfWaitingTasks() {
+    return flushPool.getWaitingTasksNumber();
   }
 
   @Override
@@ -110,15 +113,6 @@ public class FlushManager implements FlushManagerMBean, IService {
             tsFileProcessor.getTsFileResource().getTsFile().getAbsolutePath());
       }
       registerTsFileProcessor(tsFileProcessor);
-      // update stat monitor cache to system during each flush()
-      if (config.isEnableStatMonitor() && config.isEnableMonitorSeriesWrite()) {
-        try {
-          StatMonitor.getInstance()
-              .saveStatValue(tsFileProcessor.getStorageGroupName().split(separator)[0]);
-        } catch (StorageEngineException | MetadataException e) {
-          LOGGER.error("Inserting monitor series data error.", e);
-        }
-      }
     }
   }
 

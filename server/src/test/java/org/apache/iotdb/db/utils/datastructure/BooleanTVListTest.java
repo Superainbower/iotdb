@@ -30,18 +30,18 @@ import java.util.List;
 public class BooleanTVListTest {
   @Test
   public void testBooleanTVList() {
-    BooleanTVList tvList = new BooleanTVList();
+    BooleanTVList tvList = BooleanTVList.newList();
     for (int i = 0; i < 50; i++) {
       tvList.putBoolean(i, true);
     }
     for (int i = 50; i < 100; i++) {
       tvList.putBoolean(i, false);
     }
-    for (int i = 0; i < tvList.size / 2; i++) {
+    for (int i = 0; i < tvList.rowCount / 2; i++) {
       Assert.assertTrue(tvList.getBoolean(i));
       Assert.assertEquals(i, tvList.getTime(i));
     }
-    for (int i = tvList.size / 2 + 1; i < tvList.size; i++) {
+    for (int i = tvList.rowCount / 2 + 1; i < tvList.rowCount; i++) {
       Assert.assertFalse(tvList.getBoolean(i));
       Assert.assertEquals(i, tvList.getTime(i));
     }
@@ -49,7 +49,7 @@ public class BooleanTVListTest {
 
   @Test
   public void testPutBooleansWithoutBitMap() {
-    BooleanTVList tvList = new BooleanTVList();
+    BooleanTVList tvList = BooleanTVList.newList();
     List<Boolean> booleanList = new ArrayList<>();
     List<Long> timeList = new ArrayList<>();
     for (long i = 1000; i >= 0; i--) {
@@ -62,14 +62,14 @@ public class BooleanTVListTest {
         null,
         0,
         1000);
-    for (long i = 0; i < tvList.size; i++) {
-      Assert.assertEquals(tvList.size - i, tvList.getTime((int) i));
+    for (long i = 0; i < tvList.rowCount; i++) {
+      Assert.assertEquals(tvList.rowCount - i, tvList.getTime((int) i));
     }
   }
 
   @Test
   public void testPutBooleansWithBitMap() {
-    BooleanTVList tvList = new BooleanTVList();
+    BooleanTVList tvList = BooleanTVList.newList();
     List<Boolean> booleanList = new ArrayList<>();
     List<Long> timeList = new ArrayList<>();
     BitMap bitMap = new BitMap(1001);
@@ -100,7 +100,7 @@ public class BooleanTVListTest {
 
   @Test
   public void testClone() {
-    BooleanTVList tvList = new BooleanTVList();
+    BooleanTVList tvList = BooleanTVList.newList();
     List<Boolean> booleanList = new ArrayList<>();
     List<Long> timeList = new ArrayList<>();
     BitMap bitMap = new BitMap(1001);
@@ -119,7 +119,7 @@ public class BooleanTVListTest {
         1000);
     tvList.sort();
     BooleanTVList clonedTvList = tvList.clone();
-    for (long i = 0; i < tvList.size; i++) {
+    for (long i = 0; i < tvList.rowCount; i++) {
       Assert.assertEquals(tvList.getBoolean((int) i), clonedTvList.getBoolean((int) i));
       Assert.assertEquals(tvList.getTime((int) i), clonedTvList.getTime((int) i));
     }

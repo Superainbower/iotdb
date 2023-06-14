@@ -19,9 +19,7 @@
 
 package org.apache.iotdb.tsfile.utils;
 
-import org.apache.iotdb.tsfile.common.conf.TSFileDescriptor;
 import org.apache.iotdb.tsfile.common.constant.TsFileConstant;
-import org.apache.iotdb.tsfile.fileSystem.FSType;
 
 import java.io.File;
 
@@ -29,11 +27,7 @@ import static org.apache.iotdb.tsfile.common.constant.TsFileConstant.TSFILE_SUFF
 
 public class FilePathUtils {
 
-  private static final String PATH_SPLIT_STRING =
-      TSFileDescriptor.getInstance().getConfig().getTSFileStorageFs() == FSType.LOCAL
-              && File.separator.equals("\\")
-          ? "\\\\"
-          : "/";
+  private static final String LOCAL_PATH_SPLIT_STRING = "\\".equals(File.separator) ? "\\\\" : "/";
   public static final String FILE_NAME_SEPARATOR = "-";
 
   private FilePathUtils() {
@@ -56,15 +50,28 @@ public class FilePathUtils {
   /**
    * IMPORTANT, when the path of TsFile changes, the following methods should be changed
    * accordingly. The sequence TsFile is located at ${IOTDB_DATA_DIR}/data/sequence/. The unsequence
-   * TsFile is located at ${IOTDB_DATA_DIR}/data/unsequence/. Where different storage group's TsFile
-   * is located at <logicalStorageGroupName>/<virtualStorageGroupName>/<timePartitionId>/<fileName>.
+   * TsFile is located at ${IOTDB_DATA_DIR}/data/unsequence/. Where different database's TsFile is
+   * located at <logicalStorageGroupName>/<virtualStorageGroupName>/<timePartitionId>/<fileName>.
    * For example, one sequence TsFile may locate at
    * /data/data/sequence/root.group_9/0/0/1611199237113-4-0.tsfile
    *
    * @param tsFileAbsolutePath the tsFile Absolute Path
    */
   public static String[] splitTsFilePath(String tsFileAbsolutePath) {
-    return tsFileAbsolutePath.split(PATH_SPLIT_STRING);
+    String separator = LOCAL_PATH_SPLIT_STRING;
+    if (!FSUtils.isLocal(tsFileAbsolutePath)) {
+      separator = "/";
+    }
+    return tsFileAbsolutePath.split(separator);
+  }
+
+  public static boolean isSequence(String tsFileAbsolutePath) {
+    String[] pathSegments = splitTsFilePath(tsFileAbsolutePath);
+    // If path is not a regular IoTDB TsFile path, then process it as an unsequence file
+    if (pathSegments.length < 5) {
+      return false;
+    }
+    return pathSegments[pathSegments.length - 5].equals("sequence");
   }
 
   public static String getLogicalStorageGroupName(String tsFileAbsolutePath) {
@@ -72,7 +79,7 @@ public class FilePathUtils {
     return pathSegments[pathSegments.length - 4];
   }
 
-  public static String getVirtualStorageGroupId(String tsFileAbsolutePath) {
+  public static String getDataRegionId(String tsFileAbsolutePath) {
     String[] pathSegments = splitTsFilePath(tsFileAbsolutePath);
     return pathSegments[pathSegments.length - 3];
   }
